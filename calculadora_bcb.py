@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.20"
+APP_VERSION  = "2.9.21"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
