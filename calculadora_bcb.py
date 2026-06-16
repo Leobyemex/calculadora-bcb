@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.20"
+APP_VERSION  = "2.9.21"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -7592,9 +7592,29 @@ class CalculadoraApp(tk.Tk):
         self.atr_result_frame = tk.Frame(pad, bg=COLOR_PANEL)
         self.atr_result_frame.pack(fill="x", pady=(4, 0))
 
+    # ------------------------------------------------------------------ #
+    # Exportar PDF — Atraso de Parcela                                    #
+    # ------------------------------------------------------------------ #
+
+    def _atraso_limpar(self):
+        """Limpa todos os campos da aba Atraso de Parcela."""
+        for entry, placeholder in [
+            (self.e_atr_valor, "0,00"),
+            (self.e_atr_venc,  "DD/MM/AAAA"),
+            (self.e_atr_pag,   "DD/MM/AAAA"),
+            (self.e_atr_multa, "10"),
+            (self.e_atr_juros, "1"),
+        ]:
+            entry.delete(0, "end")
+            entry.insert(0, placeholder)
+            entry.configure(fg=COLOR_SUBTLE if hasattr(entry, "_is_placeholder")
+                            else COLOR_TEXT)
+        self.cb_atr_indice.set(INDICES["IPCA"]["name"])
+        for w in self.atr_result_frame.winfo_children():
+            w.destroy()
+
     def _atraso_calc(self):
         """Lê os campos da aba Atraso, valida e dispara o cálculo."""
-        # Valor
         try:
             valor = parse_valor_br(_entry_value(self.e_atr_valor))
             if valor is None or valor <= 0:
@@ -7602,7 +7622,6 @@ class CalculadoraApp(tk.Tk):
         except Exception:
             return messagebox.showerror("Validação", "Valor da parcela inválido.")
 
-        # Datas
         data_venc = parse_date_br(_entry_value(self.e_atr_venc))
         if not data_venc:
             return messagebox.showerror("Validação", "Data de vencimento inválida.")
@@ -7610,7 +7629,6 @@ class CalculadoraApp(tk.Tk):
         if not data_pag:
             return messagebox.showerror("Validação", "Data de pagamento/atualização inválida.")
 
-        # Multa e juros
         try:
             multa_str = _entry_value(self.e_atr_multa).replace(",", ".")
             multa_pct = Decimal(multa_str) / Decimal("100")
@@ -7622,21 +7640,19 @@ class CalculadoraApp(tk.Tk):
         except Exception:
             juros_pct = Decimal("0.01")
 
-        # Índice
         indice_nome = self.cb_atr_indice.get()
         indice_key = next(
             (k for k, v in INDICES.items() if v["name"] == indice_nome), "IPCA")
 
         config = {
-            "data_vencimento":  data_venc,
-            "data_pagamento":   data_pag,
-            "valor_parcela":    valor,
-            "multa_pct":        multa_pct,
+            "data_vencimento":   data_venc,
+            "data_pagamento":    data_pag,
+            "valor_parcela":     valor,
+            "multa_pct":         multa_pct,
             "juros_mensais_pct": juros_pct,
-            "indice_key":       indice_key,
+            "indice_key":        indice_key,
         }
 
-        # Limpa resultado anterior e mostra loading
         for w in self.atr_result_frame.winfo_children():
             w.destroy()
         self.btn_atr_calc.config(state="disabled")
@@ -7708,34 +7724,11 @@ class CalculadoraApp(tk.Tk):
         row("TOTAL A PAGAR:", fmt_brl(res["total"]),
             bold=True, color=COLOR_RESULT_OK)
 
-        # Botão PDF
         btn_row = tk.Frame(frame, bg=COLOR_RESULT_BG)
         btn_row.pack(fill="x", padx=12, pady=(8, 12))
         ttk.Button(btn_row, text="⬇ Exportar PDF",
                    style="BCBSmall.TButton",
                    command=self._atraso_export_pdf).pack(side="right")
-
-        # ------------------------------------------------------------------ #
-    # Exportar PDF — Atraso de Parcela                                    #
-    # ------------------------------------------------------------------ #
-
-    def _atraso_limpar(self):
-        """Limpa todos os campos da aba Atraso de Parcela."""
-        for entry, placeholder in [
-            (self.e_atr_valor, "0,00"),
-            (self.e_atr_venc,  "DD/MM/AAAA"),
-            (self.e_atr_pag,   "DD/MM/AAAA"),
-            (self.e_atr_multa, "10"),
-            (self.e_atr_juros, "1"),
-        ]:
-            entry.delete(0, "end")
-            entry.insert(0, placeholder)
-            entry.configure(fg=COLOR_SUBTLE if hasattr(entry, "_is_placeholder")
-                            else COLOR_TEXT)
-        self.cb_atr_indice.set(INDICES["IPCA"]["name"])
-        # Limpa resultado
-        for w in self.atr_result_frame.winfo_children():
-            w.destroy()
 
     def _atraso_export_pdf(self):
         path = filedialog.asksaveasfilename(
