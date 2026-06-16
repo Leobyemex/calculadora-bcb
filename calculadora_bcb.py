@@ -3221,6 +3221,79 @@ def exportar_xlsx_cobranca(filepath, res):
 
     ws.column_dimensions["A"].width = 56
     ws.column_dimensions["B"].width = 22
+
+    # Segunda aba: Detalhamento mês a mês (só quando há competências)
+    competencias = res.get("competencias") or []
+    if competencias:
+        ws2 = wb.create_sheet("Detalhamento Mês a Mês")
+        aplica_juros = res.get("aplicar_juros", False)
+
+        headers_det = ["Competência", "Descrição", "Valor Original (R$)",
+                       "Fator", "Valor Corrigido (R$)"]
+        if aplica_juros:
+            headers_det += ["Meses Juros", "Juros (R$)"]
+
+        # Cabeçalho
+        for ci, h in enumerate(headers_det, start=1):
+            c = ws2.cell(1, ci, h)
+            c.fill = azul
+            c.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = borda
+        ws2.row_dimensions[1].height = 18
+
+        # Dados
+        for ri, det in enumerate(competencias, start=2):
+            bg_fill = PatternFill("solid", fgColor="F0F4F8") if ri % 2 == 0                       else PatternFill("solid", fgColor="FFFFFF")
+            vals = [
+                det["data"].strftime("%m/%Y"),
+                det.get("descricao", "") or "",
+                float(det["valor"]),
+                float(det["fator"]),
+                float(det["valor_corrigido"]),
+            ]
+            if aplica_juros:
+                vals += [
+                    float(det.get("meses_juros", 0)),
+                    float(det.get("juros", 0)),
+                ]
+            for ci, val in enumerate(vals, start=1):
+                c = ws2.cell(ri, ci, val)
+                c.border = borda
+                c.fill = bg_fill
+                c.font = f_normal
+                if ci == 1:  # Competência
+                    c.alignment = Alignment(horizontal="center")
+                elif ci >= 3:  # Valores numéricos
+                    if ci == 4:  # Fator
+                        c.number_format = "0.000000"
+                    else:
+                        c.number_format = '#,##0.00'
+                    c.alignment = Alignment(horizontal="right")
+
+        # Linha de totais
+        r_tot = len(competencias) + 2
+        total_corr = sum(float(d["valor_corrigido"]) for d in competencias)
+        total_orig = sum(float(d["valor"]) for d in competencias)
+        tot_vals = ["TOTAL", "", total_orig, "", total_corr]
+        if aplica_juros:
+            tot_juros = sum(float(d.get("juros", 0)) for d in competencias)
+            tot_vals += ["", tot_juros]
+        for ci, val in enumerate(tot_vals, start=1):
+            c = ws2.cell(r_tot, ci, val)
+            c.border = borda
+            c.font = Font(name="Calibri", bold=True, size=10)
+            c.fill = verde_claro
+            if ci >= 3 and val != "":
+                c.number_format = '#,##0.00'
+                c.alignment = Alignment(horizontal="right")
+
+        # Larguras
+        col_widths = [14, 28, 20, 14, 20, 14, 16]
+        for ci, w in enumerate(col_widths[:len(headers_det)], start=1):
+            ws2.column_dimensions[
+                openpyxl.utils.get_column_letter(ci)].width = w
+
     wb.save(filepath)
 
 
@@ -7251,6 +7324,95 @@ class CalculadoraApp(tk.Tk):
                 bg=COLOR_BCB_BLUE, fg="white",
                 font=("Consolas", 16, "bold"), padx=12, pady=8).pack(side="right")
 
+        # Detalhamento mês a mês (colapsável) — só aparece em modo competências
+        competencias = res.get("competencias") or []
+        if competencias:
+            det_header = tk.Frame(box, bg=COLOR_RESULT_BG)
+            det_header.pack(fill="x", padx=14, pady=(4, 0))
+            det_visible = tk.BooleanVar(value=False)
+            det_frame = tk.Frame(box, bg=COLOR_RESULT_BG)
+
+            def _toggle_det(dv=det_visible, df=det_frame, dh=det_header):
+                if dv.get():
+                    df.pack_forget()
+                    dv.set(False)
+                    for w in dh.winfo_children():
+                        w.destroy()
+                    _build_det_btn(dh, dv, df)
+                else:
+                    dv.set(True)
+                    df.pack(fill="x", padx=14, pady=(0, 8))
+                    for w in dh.winfo_children():
+                        w.destroy()
+                    _build_det_btn(dh, dv, df)
+
+            def _build_det_btn(dh, dv, df):
+                arrow = "▼" if dv.get() else "▶"
+                tk.Button(dh,
+                    text=f"{arrow}  Detalhamento mês a mês ({len(competencias)} competências)",
+                    bg=COLOR_RESULT_BG, fg=COLOR_BCB_BLUE,
+                    font=("Verdana", 8, "underline"),
+                    relief="flat", cursor="hand2", bd=0,
+                    command=lambda: _toggle_det()
+                ).pack(side="left")
+
+            _build_det_btn(det_header, det_visible, det_frame)
+
+            # Preenche a tabela quando expandida
+            def _fill_det_table(df=det_frame, comps=competencias, res=res):
+                for w in df.winfo_children():
+                    w.destroy()
+                aplica_juros = res.get("aplicar_juros", False)
+                cols = ["Competência", "Descrição", "Valor Original", "Fator",
+                        "Valor Corrigido"]
+                if aplica_juros:
+                    cols += ["Meses Juros", "Juros"]
+
+                tbl = tk.Frame(df, bg=COLOR_RESULT_BG)
+                tbl.pack(fill="x")
+
+                hdr_bg = COLOR_TABLE_HEADER
+                for ci, ch in enumerate(cols):
+                    tk.Label(tbl, text=ch, bg=hdr_bg, fg="white",
+                             font=("Verdana", 8, "bold"),
+                             padx=6, pady=4, anchor="center",
+                             relief="flat").grid(
+                        row=0, column=ci, sticky="ew", padx=1, pady=(0, 1))
+                    tbl.columnconfigure(ci, weight=1)
+
+                for ri, det in enumerate(comps, start=1):
+                    bg = COLOR_TABLE_ALT if ri % 2 == 0 else COLOR_PANEL
+                    competencia = det["data"].strftime("%m/%Y")
+                    descricao   = det.get("descricao", "") or ""
+                    v_orig      = f"R$ {fmt_brl(det['valor'])}"
+                    v_fator     = fmt_fator(det["fator"])
+                    v_corr      = f"R$ {fmt_brl(det['valor_corrigido'])}"
+
+                    vals = [competencia, descricao, v_orig, v_fator, v_corr]
+                    if aplica_juros:
+                        mj = det.get("meses_juros", 0)
+                        jj = det.get("juros", 0)
+                        vals += [f"{float(mj):.0f}", f"R$ {fmt_brl(jj)}"]
+
+                    for ci, val in enumerate(vals):
+                        anchor = "e" if ci >= 2 else "w"
+                        tk.Label(tbl, text=val, bg=bg,
+                                 font=("Consolas", 8),
+                                 fg=COLOR_TEXT,
+                                 padx=6, pady=3,
+                                 anchor=anchor).grid(
+                            row=ri, column=ci, sticky="ew", padx=1, pady=0)
+
+            # Monkey-patch toggle para também preencher a tabela
+            orig_toggle = _toggle_det
+            def _toggle_with_fill(dv=det_visible, df=det_frame, dh=det_header):
+                was_visible = dv.get()
+                orig_toggle()
+                if not was_visible:
+                    _fill_det_table(df)
+            for w in det_header.winfo_children():
+                w.configure(command=_toggle_with_fill)
+
         # Aviso de saldo credor (total negativo)
         if res["total"] < 0:
             warn = tk.Frame(box, bg="#FFF6D5",
@@ -7430,9 +7592,150 @@ class CalculadoraApp(tk.Tk):
         self.atr_result_frame = tk.Frame(pad, bg=COLOR_PANEL)
         self.atr_result_frame.pack(fill="x", pady=(4, 0))
 
-    # ------------------------------------------------------------------ #
+    def _atraso_calc(self):
+        """Lê os campos da aba Atraso, valida e dispara o cálculo."""
+        # Valor
+        try:
+            valor = parse_valor_br(_entry_value(self.e_atr_valor))
+            if valor is None or valor <= 0:
+                raise ValueError()
+        except Exception:
+            return messagebox.showerror("Validação", "Valor da parcela inválido.")
+
+        # Datas
+        data_venc = parse_date_br(_entry_value(self.e_atr_venc))
+        if not data_venc:
+            return messagebox.showerror("Validação", "Data de vencimento inválida.")
+        data_pag = parse_date_br(_entry_value(self.e_atr_pag))
+        if not data_pag:
+            return messagebox.showerror("Validação", "Data de pagamento/atualização inválida.")
+
+        # Multa e juros
+        try:
+            multa_str = _entry_value(self.e_atr_multa).replace(",", ".")
+            multa_pct = Decimal(multa_str) / Decimal("100")
+        except Exception:
+            multa_pct = Decimal("0.10")
+        try:
+            juros_str = _entry_value(self.e_atr_juros).replace(",", ".")
+            juros_pct = Decimal(juros_str) / Decimal("100")
+        except Exception:
+            juros_pct = Decimal("0.01")
+
+        # Índice
+        indice_nome = self.cb_atr_indice.get()
+        indice_key = next(
+            (k for k, v in INDICES.items() if v["name"] == indice_nome), "IPCA")
+
+        config = {
+            "data_vencimento":  data_venc,
+            "data_pagamento":   data_pag,
+            "valor_parcela":    valor,
+            "multa_pct":        multa_pct,
+            "juros_mensais_pct": juros_pct,
+            "indice_key":       indice_key,
+        }
+
+        # Limpa resultado anterior e mostra loading
+        for w in self.atr_result_frame.winfo_children():
+            w.destroy()
+        self.btn_atr_calc.config(state="disabled")
+        loading = tk.Label(self.atr_result_frame,
+                           text="⟳  Calculando...", bg=COLOR_PANEL,
+                           fg=COLOR_BCB_BLUE, font=("Verdana", 9, "italic"),
+                           pady=20)
+        loading.pack()
+        limpar_cache_api()
+
+        def progress(msg):
+            try:
+                self.after(0, lambda: loading.config(text="⟳  " + msg))
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                res = calcular_atraso_parcela(config, progress_cb=progress)
+                self.after(0, lambda: self._render_atraso_result(res))
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: (
+                    loading.destroy(),
+                    messagebox.showerror("Erro no cálculo", err),
+                    self.btn_atr_calc.config(state="normal")
+                ))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_atraso_result(self, res):
+        """Exibe o resultado do cálculo de atraso de parcela."""
+        self.btn_atr_calc.config(state="normal")
+        self.atr_resultado = res
+
+        for w in self.atr_result_frame.winfo_children():
+            w.destroy()
+
+        frame = tk.Frame(self.atr_result_frame, bg=COLOR_RESULT_BG,
+                         relief="flat", bd=1)
+        frame.pack(fill="x", pady=(8, 0))
+
+        def row(label, value, bold=False, color=COLOR_TEXT):
+            r = tk.Frame(frame, bg=COLOR_RESULT_BG)
+            r.pack(fill="x", padx=12, pady=2)
+            tk.Label(r, text=label, bg=COLOR_RESULT_BG, fg=COLOR_SUBTLE,
+                     font=("Verdana", 8), anchor="w", width=34).pack(side="left")
+            tk.Label(r, text=value, bg=COLOR_RESULT_BG, fg=color,
+                     font=("Verdana", 9, "bold" if bold else "normal"),
+                     anchor="e").pack(side="right")
+
+        tk.Frame(frame, bg=COLOR_BCB_BLUE, height=3).pack(fill="x")
+        tk.Label(frame, text="Resultado — Atraso de Parcela",
+                 bg=COLOR_RESULT_BG, fg=COLOR_BCB_BLUE,
+                 font=("Verdana", 10, "bold"), pady=8).pack()
+
+        row("Índice utilizado:", res["indice_nome"])
+        row("Valor original:", fmt_brl(res["valor_parcela"]))
+        row("Fator de correção:", fmt_fator(res["fator"]))
+        row("Valor atualizado:", fmt_brl(res["valor_atualizado"]))
+        row(f"Multa ({float(res['multa_pct']*100):.0f}%):",
+            fmt_brl(res["multa"]))
+        row(f"Juros ({float(res['juros_mensais_pct']*100):.1f}% × "
+            f"{float(res['meses_atraso_juros']):.2f} meses):".replace(".", ","),
+            fmt_brl(res["juros"]))
+
+        tk.Frame(frame, bg="#cccccc", height=1).pack(fill="x", padx=12, pady=4)
+
+        row("TOTAL A PAGAR:", fmt_brl(res["total"]),
+            bold=True, color=COLOR_RESULT_OK)
+
+        # Botão PDF
+        btn_row = tk.Frame(frame, bg=COLOR_RESULT_BG)
+        btn_row.pack(fill="x", padx=12, pady=(8, 12))
+        ttk.Button(btn_row, text="⬇ Exportar PDF",
+                   style="BCBSmall.TButton",
+                   command=self._atraso_export_pdf).pack(side="right")
+
+        # ------------------------------------------------------------------ #
     # Exportar PDF — Atraso de Parcela                                    #
     # ------------------------------------------------------------------ #
+
+    def _atraso_limpar(self):
+        """Limpa todos os campos da aba Atraso de Parcela."""
+        for entry, placeholder in [
+            (self.e_atr_valor, "0,00"),
+            (self.e_atr_venc,  "DD/MM/AAAA"),
+            (self.e_atr_pag,   "DD/MM/AAAA"),
+            (self.e_atr_multa, "10"),
+            (self.e_atr_juros, "1"),
+        ]:
+            entry.delete(0, "end")
+            entry.insert(0, placeholder)
+            entry.configure(fg=COLOR_SUBTLE if hasattr(entry, "_is_placeholder")
+                            else COLOR_TEXT)
+        self.cb_atr_indice.set(INDICES["IPCA"]["name"])
+        # Limpa resultado
+        for w in self.atr_result_frame.winfo_children():
+            w.destroy()
 
     def _atraso_export_pdf(self):
         path = filedialog.asksaveasfilename(
