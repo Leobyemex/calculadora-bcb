@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.21"
+APP_VERSION  = "2.9.22"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -586,9 +586,8 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
             )
             dias_atraso = max(0, (data_atual - venc).days)
             # Demonstrativo Previdenciário (via IPCA): a contagem de meses
-            # para os juros de mora segue a base 30/360 com inclusão do
-            # primeiro dia (regra usada nos cálculos manuais do setor):
-            #   meses = (Y2−Y1)*12 + (M2−M1) + (D2 − D1 + 1)/30
+            # para os juros de mora segue a base 30/360:
+            #   meses = (Y2−Y1)*12 + (M2−M1) + (D2 − D1)/30
             # com dias limitados a 30 (final do mês).
             if data_atual >= venc:
                 d1 = min(venc.day, 30)
@@ -596,7 +595,7 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
                 meses_atraso = (
                     Decimal(data_atual.year - venc.year) * Decimal("12")
                     + Decimal(data_atual.month - venc.month)
-                    + Decimal(d2 - d1 + 1) / Decimal("30")
+                    + Decimal(d2 - d1) / Decimal("30")
                 )
                 if meses_atraso < 0:
                     meses_atraso = Decimal("0")
