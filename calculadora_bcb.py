@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.25"
+APP_VERSION  = "2.9.26"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -461,6 +461,17 @@ def _produtorio_selic_dias(dados, data_ini, data_fim):
     return fator, dias
 
 
+
+def _aliquota_para_data(periodos, data):
+    """Retorna (aliq_seg, aliq_pat) para a data, baseado na lista de períodos.
+    Retorna (None, None) se não encontrar período compatível."""
+    for p in sorted(periodos, key=lambda x: x["data_ini"]):
+        fim = p.get("data_fim")
+        if data >= p["data_ini"] and (fim is None or data <= fim):
+            return p["aliq_seg"], p["aliq_pat"]
+    return None, None
+
+
 def calcular_demonstrativo(config, competencias, progress_cb=None):
     """
     config:
@@ -488,6 +499,7 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
     data_atual = config["data_atualizacao"]
     aliq_seg = Decimal(str(config.get("aliquota_seg", "0.14")))
     aliq_pat = Decimal(str(config.get("aliquota_pat", "0.28")))
+    periodos_aliq = config.get("periodos_aliquota") or []
     dia_venc = int(config.get("dia_vencimento", 5))
     # juros mensais (1% padrão) - editável; mesma taxa para IPCA (juros de mora ao mês)
     # e Selic (1% no mês do pagamento). Retrocompat: aceita juros_mora_pct ou juros_pagamento_pct.
@@ -569,8 +581,16 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
         desc = c.get("descricao") or fmt_competencia(mes, ano)
 
         # Valor devido (Segurado e Patronal)
-        valor_seg = (base * aliq_seg).quantize(Decimal("0.01"))
-        valor_pat = (base * aliq_pat).quantize(Decimal("0.01"))
+        # Se houver períodos de alíquota, busca a alíquota correta para a data do vencimento
+        if periodos_aliq:
+            _as, _ap = _aliquota_para_data(periodos_aliq, vencimentos[i])
+            aliq_seg_c = _as if _as is not None else aliq_seg
+            aliq_pat_c = _ap if _ap is not None else aliq_pat
+        else:
+            aliq_seg_c = aliq_seg
+            aliq_pat_c = aliq_pat
+        valor_seg = (base * aliq_seg_c).quantize(Decimal("0.01"))
+        valor_pat = (base * aliq_pat_c).quantize(Decimal("0.01"))
 
         # Fator de correção entre vencimento e atualização
         if indice_key == "SELIC":
@@ -620,9 +640,9 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
             total_seg = (atual_seg + juros_seg + multa_seg).quantize(Decimal("0.01"))
             total_pat = (atual_pat + juros_pat + multa_pat).quantize(Decimal("0.01"))
         else:
-            # Juros mensais (configurável, default 1%) × meses de atraso, sobre o valor atualizado
-            juros_seg = (atual_seg * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
-            juros_pat = (atual_pat * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
+            # Juros mensais (configurável, default 1%) × meses de atraso, sobre o valor original devido
+            juros_seg = (valor_seg * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
+            juros_pat = (valor_pat * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
             multa_seg = Decimal("0")
             multa_pat = Decimal("0")
             total_seg = (atual_seg + juros_seg).quantize(Decimal("0.01"))
@@ -5432,6 +5452,48 @@ class CalculadoraApp(tk.Tk):
                 row=4, column=4, columnspan=4, sticky="w",
                 padx=(0, 4), pady=(10, 0))
 
+
+        # ===== Alíquotas por Período (opcional) =====
+        self._periodos_frame = tk.LabelFrame(
+            tab, text=" Alíquotas por Período (IPREM) ",
+            bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+            font=("Verdana", 8, "bold"), bd=1, relief="solid")
+        self._periodos_frame.pack(fill="x", pady=(0, 4))
+
+        self.usar_periodos_var = tk.BooleanVar(value=False)
+        chk_p = tk.Checkbutton(
+            self._periodos_frame,
+            text="Usar alíquotas diferenciadas por período",
+            variable=self.usar_periodos_var,
+            bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+            activebackground=COLOR_PANEL, font=("Verdana", 9, "bold"),
+            selectcolor="white",
+            command=self._demo_toggle_periodos)
+        chk_p.pack(side="left", padx=(8, 4), pady=6)
+
+        ttk.Button(self._periodos_frame, text="Padrão IPREM/SP",
+                   style="BCBSmall.TButton",
+                   command=self._demo_reset_periodos_iprem).pack(
+                       side="right", padx=8, pady=6)
+
+        # Container interno (mostrado/oculto)
+        self._periodos_inner = tk.Frame(self._periodos_frame, bg=COLOR_PANEL)
+        # Header
+        _ph = tk.Frame(self._periodos_inner, bg=COLOR_BCB_BLUE)
+        _ph.pack(fill="x")
+        for _txt, _w in [("Data Início", 12), ("Data Fim (vazio=aberto)", 18),
+                          ("Alíq. Seg. %", 10), ("Alíq. Pat. %", 10), ("", 4)]:
+            tk.Label(_ph, text=_txt, bg=COLOR_BCB_BLUE, fg="white",
+                     font=("Verdana", 8, "bold"), width=_w,
+                     padx=4, pady=3).pack(side="left", padx=1)
+        self._periodos_rows_frame = tk.Frame(self._periodos_inner, bg=COLOR_PANEL)
+        self._periodos_rows_frame.pack(fill="x")
+        ttk.Button(self._periodos_inner, text="+ Adicionar período",
+                   style="BCBSmall.TButton",
+                   command=self._demo_add_periodo).pack(side="left", pady=(4, 4), padx=4)
+        self.periodos_rows = []
+        # começa oculto
+
         # Botões topo
         top_bar = tk.Frame(tab, bg=COLOR_PANEL)
         top_bar.pack(fill="x", pady=(0, 4))
@@ -5602,6 +5664,70 @@ class CalculadoraApp(tk.Tk):
             self.e_demo_honor_pct.configure(state="normal")
         else:
             self.e_demo_honor_pct.configure(state="disabled")
+
+    def _demo_toggle_periodos(self):
+        if self.usar_periodos_var.get():
+            self._periodos_inner.pack(fill="x", padx=8, pady=(0, 8))
+            if not self.periodos_rows:
+                self._demo_reset_periodos_iprem()
+        else:
+            self._periodos_inner.pack_forget()
+
+    def _demo_reset_periodos_iprem(self):
+        """Preenche com as alíquotas históricas padrão IPREM/SP."""
+        for r in list(self.periodos_rows):
+            r["frame"].destroy()
+        self.periodos_rows.clear()
+        padrao = [
+            ("04/01/1990", "10/08/2005", "5", "2"),
+            ("11/08/2005", "27/03/2019", "11", "22"),
+            ("28/03/2019", "", "14", "28"),
+        ]
+        for ini, fim, seg, pat in padrao:
+            self._demo_add_periodo(ini, fim, seg, pat)
+
+    def _demo_add_periodo(self, ini="", fim="", seg="", pat=""):
+        """Adiciona uma linha de período de alíquota."""
+        row_frame = tk.Frame(self._periodos_rows_frame, bg=COLOR_PANEL)
+        row_frame.pack(fill="x", pady=1)
+
+        e_ini = _entry_make(row_frame, width=12, placeholder="DD/MM/AAAA")
+        e_ini.pack(side="left", padx=(4, 2))
+        _mask_full_date(e_ini)
+        if ini:
+            _entry_set(e_ini, ini)
+
+        e_fim = _entry_make(row_frame, width=16, placeholder="DD/MM/AAAA")
+        e_fim.pack(side="left", padx=2)
+        _mask_full_date(e_fim)
+        if fim:
+            _entry_set(e_fim, fim)
+
+        e_seg = _entry_make(row_frame, width=8, placeholder="14")
+        e_seg.pack(side="left", padx=(8, 2))
+        if seg:
+            _entry_set(e_seg, seg)
+        tk.Label(row_frame, text="%", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+                 font=("Verdana", 8)).pack(side="left")
+
+        e_pat = _entry_make(row_frame, width=8, placeholder="28")
+        e_pat.pack(side="left", padx=(10, 2))
+        if pat:
+            _entry_set(e_pat, pat)
+        tk.Label(row_frame, text="%", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+                 font=("Verdana", 8)).pack(side="left")
+
+        row_data = {"frame": row_frame, "ini": e_ini, "fim": e_fim,
+                    "seg": e_seg, "pat": e_pat}
+
+        def remove_row(rd=row_data):
+            rd["frame"].destroy()
+            if rd in self.periodos_rows:
+                self.periodos_rows.remove(rd)
+
+        ttk.Button(row_frame, text="✕", style="BCBSmall.TButton",
+                   width=3, command=remove_row).pack(side="left", padx=6)
+        self.periodos_rows.append(row_data)
 
     def _demo_toggle_selic_fields(self, event=None):
         is_selic = self.cb_demo_indice.get() == "SELIC"
@@ -5835,6 +5961,35 @@ class CalculadoraApp(tk.Tk):
             return messagebox.showwarning(
                 "Demonstrativo", "Adicione ao menos uma competência.")
 
+        # Coletar períodos de alíquota se habilitado
+        periodos_aliquota_cfg = None
+        if getattr(self, "usar_periodos_var", None) and self.usar_periodos_var.get():
+            periodos_aliquota_cfg = []
+            for r in self.periodos_rows:
+                ini_str = _entry_value(r["ini"]).strip()
+                fim_str = _entry_value(r["fim"]).strip()
+                seg_str = _entry_value(r["seg"]).strip()
+                pat_str = _entry_value(r["pat"]).strip()
+                if not ini_str or not seg_str or not pat_str:
+                    continue
+                d_ini = parse_date_br(ini_str)
+                d_fim = parse_date_br(fim_str) if fim_str else None
+                if not d_ini:
+                    return messagebox.showerror(
+                        "Validação", f"Período: data início inválida '{ini_str}'.")
+                try:
+                    alq_s = Decimal(seg_str.replace(",", ".")) / Decimal("100")
+                    alq_p = Decimal(pat_str.replace(",", ".")) / Decimal("100")
+                except Exception:
+                    return messagebox.showerror(
+                        "Validação", "Período: alíquota inválida. Use números (ex: 14).")
+                periodos_aliquota_cfg.append({
+                    "data_ini": d_ini,
+                    "data_fim": d_fim,
+                    "aliq_seg": alq_s,
+                    "aliq_pat": alq_p,
+                })
+
         config = {
             "indice_key": indice_key,
             "data_atualizacao": data_atu,
@@ -5846,6 +6001,7 @@ class CalculadoraApp(tk.Tk):
             "multa_limite_pct": multa_lim,     # editável (teto Selic)
             "aplicar_honorarios": aplicar_honor,
             "honorarios_pct": honor_pct,
+            "periodos_aliquota": periodos_aliquota_cfg or [],
         }
 
         self.btn_demo_calc.config(state="disabled")
