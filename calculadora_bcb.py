@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.22"
+APP_VERSION  = "2.9.24"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -2377,8 +2377,9 @@ def exportar_xlsx_demo(filepath, resultado, dados_processo=None):
                  17, 14]
     _xl_set_widths(ws, widths)
 
-    # Freeze pane
-    ws.freeze_panes = ws.cell(row=HEADER_ROW + 1, column=3)
+    # Freeze pane — só linhas, sem congelar colunas
+    # (congelar colunas quebra a renderização das células mescladas do cabeçalho)
+    ws.freeze_panes = ws.cell(row=HEADER_ROW + 1, column=1)
 
     # Auto-filter
     ws.auto_filter.ref = (f"A{HEADER_ROW}:"
@@ -3676,10 +3677,10 @@ class CalculadoraApp(tk.Tk):
                 nova_versao = data.get("tag_name", "").lstrip("v")
                 if not nova_versao or not _versao_maior(nova_versao, APP_VERSION):
                     return
-                # Procura o asset .exe
+                # Procura o asset .zip
                 asset_url = None
                 for asset in data.get("assets", []):
-                    if asset.get("name", "").lower().endswith(".exe"):
+                    if asset.get("name", "").lower().endswith(".zip"):
                         asset_url = asset["browser_download_url"]
                         break
                 notes = data.get("body", "").strip()[:400] or "Sem notas de versão."
@@ -3735,7 +3736,7 @@ class CalculadoraApp(tk.Tk):
             if not asset_url:
                 messagebox.showwarning(
                     "Sem arquivo",
-                    "Nenhum arquivo .exe encontrado nessa release.\n"
+                    "Nenhum arquivo .zip encontrado nessa release.\n"
                     "Acesse o GitHub para baixar manualmente.",
                     parent=win)
                 return
@@ -3754,8 +3755,8 @@ class CalculadoraApp(tk.Tk):
                           side="right")
 
     def _baixar_e_atualizar(self, asset_url: str):
-        """Baixa o novo .exe e cria updater.bat para substituição."""
-        import tempfile, sys
+        """Baixa o novo .zip e cria updater.bat para substituição da pasta."""
+        import sys
 
         win = tk.Toplevel(self)
         win.title("Baixando atualização…")
@@ -3778,24 +3779,34 @@ class CalculadoraApp(tk.Tk):
 
         def _worker():
             try:
-                # Determina caminhos
-                if getattr(sys, "frozen", False):
-                    current_exe = sys.executable
-                else:
-                    current_exe = os.path.abspath(sys.argv[0])
-                exe_dir  = os.path.dirname(current_exe)
-                exe_name = os.path.basename(current_exe)
-                new_exe  = os.path.join(exe_dir, "_update_new.exe")
-                bat_path = os.path.join(exe_dir, "updater.bat")
+                # Só atualiza automaticamente na versão compilada (frozen)
+                if not getattr(sys, "frozen", False):
+                    self.after(0, lambda: (
+                        bar.stop(), win.destroy(),
+                        messagebox.showinfo(
+                            "Desenvolvimento",
+                            "Auto-update disponível apenas na versão compilada.",
+                            parent=self)
+                    ))
+                    return
 
-                # Download
+                current_exe  = sys.executable
+                exe_dir      = os.path.dirname(current_exe)   # pasta da app
+                app_parent   = os.path.dirname(exe_dir)       # pasta PAI
+                app_dir_name = os.path.basename(exe_dir)      # ex.: "CalculadoraBCB"
+                zip_path     = os.path.join(exe_dir, "_update.zip")
+                temp_dir     = os.path.join(app_parent, "_update_temp")
+                new_app_dir  = os.path.join(temp_dir, app_dir_name)
+                bat_path     = os.path.join(app_parent, "updater.bat")
+
+                # Download do ZIP
                 self.after(0, lambda: status_lbl.configure(
                     text="Baixando arquivo…"))
                 req = urllib.request.Request(
                     asset_url,
                     headers={"User-Agent": f"calculadora-bcb/{APP_VERSION}"})
-                with urllib.request.urlopen(req, timeout=60) as resp, \
-                        open(new_exe, "wb") as f:
+                with urllib.request.urlopen(req, timeout=120) as resp, \
+                        open(zip_path, "wb") as f:
                     total = int(resp.headers.get("Content-Length", 0))
                     downloaded = 0
                     while True:
@@ -3809,13 +3820,21 @@ class CalculadoraApp(tk.Tk):
                             self.after(0, lambda p=pct: status_lbl.configure(
                                 text=f"Baixando… {p}%"))
 
-                # Cria updater.bat
+                # Cria updater.bat na pasta PAI (fora da app, para não ser deletado)
+                # O bat: extrai o ZIP → copia os arquivos novos → reinicia o app
+                ps_cmd = (
+                    f"Expand-Archive -LiteralPath '{zip_path}' "
+                    f"-DestinationPath '{temp_dir}' -Force"
+                )
                 bat_content = (
-                    "@echo off\n"
-                    "timeout /t 2 /nobreak >nul\n"
-                    f'move /Y "{new_exe}" "{current_exe}"\n'
-                    f'start "" "{current_exe}"\n'
-                    "del \"%~f0\"\n"
+                    "@echo off\r\n"
+                    "timeout /t 2 /nobreak >nul\r\n"
+                    f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{ps_cmd}"\r\n'
+                    f'robocopy "{new_app_dir}" "{exe_dir}" /E /IS /IT /NFL /NDL /NJH /NJS /NP\r\n'
+                    f'rmdir /S /Q "{temp_dir}"\r\n'
+                    f'del "{zip_path}"\r\n'
+                    f'start "" "{current_exe}"\r\n'
+                    'del "%~f0"\r\n'
                 )
                 with open(bat_path, "w", encoding="utf-8") as f:
                     f.write(bat_content)
@@ -7714,7 +7733,7 @@ class CalculadoraApp(tk.Tk):
         row("Valor atualizado:", fmt_brl(res["valor_atualizado"]))
         row(f"Multa ({float(res['multa_pct']*100):.0f}%):",
             fmt_brl(res["multa"]))
-        row(f"Juros ({float(res['juros_mensais_pct']*100):.1f}% × "
+        row(f"Juros ({fot(res['juros_mensais_pct']*100):.1f}% × "
             f"{float(res['meses_atraso_juros']):.2f} meses):".replace(".", ","),
             fmt_brl(res["juros"]))
 
