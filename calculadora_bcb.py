@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.26"
+APP_VERSION  = "2.9.27"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -472,6 +472,42 @@ def _aliquota_para_data(periodos, data):
     return None, None
 
 
+def _aliquota_proporcional_mes(periodos, mes, ano):
+    """Retorna (aliq_seg, aliq_pat) para o mês/ano da competência.
+    Quando um período termina ou começa no meio do mês (ex: ago/2005, mar/2019),
+    calcula a alíquota proporcional pelos dias de cada vigência no mês."""
+    dias_mes = monthrange(ano, mes)[1]
+    d_ini_mes = date(ano, mes, 1)
+    d_fim_mes = date(ano, mes, dias_mes)
+
+    periodos_sorted = sorted(periodos, key=lambda x: x["data_ini"])
+
+    total_seg_dias = Decimal("0")
+    total_pat_dias = Decimal("0")
+    dias_cobertos = 0
+
+    for p in periodos_sorted:
+        p_ini = p["data_ini"]
+        p_fim = p.get("data_fim")
+
+        inicio = max(p_ini, d_ini_mes)
+        fim    = min(p_fim, d_fim_mes) if p_fim else d_fim_mes
+
+        if inicio > d_fim_mes or fim < d_ini_mes:
+            continue
+
+        dias = (fim - inicio).days + 1
+        total_seg_dias += p["aliq_seg"] * Decimal(dias)
+        total_pat_dias += p["aliq_pat"] * Decimal(dias)
+        dias_cobertos  += dias
+
+    if dias_cobertos == 0:
+        return None, None
+
+    return (total_seg_dias / Decimal(dias_cobertos),
+            total_pat_dias / Decimal(dias_cobertos))
+
+
 def calcular_demonstrativo(config, competencias, progress_cb=None):
     """
     config:
@@ -583,7 +619,7 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
         # Valor devido (Segurado e Patronal)
         # Se houver períodos de alíquota, busca a alíquota correta para a data do vencimento
         if periodos_aliq:
-            _as, _ap = _aliquota_para_data(periodos_aliq, vencimentos[i])
+            _as, _ap = _aliquota_proporcional_mes(periodos_aliq, mes, ano)
             aliq_seg_c = _as if _as is not None else aliq_seg
             aliq_pat_c = _ap if _ap is not None else aliq_pat
         else:
