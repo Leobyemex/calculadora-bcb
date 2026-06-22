@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.27"
+APP_VERSION  = "2.9.28"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -5361,11 +5361,21 @@ class CalculadoraApp(tk.Tk):
             style="Info.TLabel"
         ).pack(fill="x", pady=(0, 6))
 
+        # ── Dividir aba: inputs (cima) / resultado (baixo) ────────────────
+        _demo_paned = ttk.PanedWindow(tab, orient="vertical")
+        _demo_paned.pack(fill="both", expand=True)
+        inp = tk.Frame(_demo_paned, bg=COLOR_PANEL)
+        _demo_paned.add(inp, weight=0)
+        res = tk.Frame(_demo_paned, bg=COLOR_PANEL)
+        _demo_paned.add(res, weight=1)
+        # Define posição inicial do sash após o widget ser renderizado
+        tab.after(200, lambda p=_demo_paned: p.sashpos(0, 450))
+
         # Seção: Dados do Processo (cabeçalho do relatório)
-        self._build_processo_section(tab, scope="demo")
+        self._build_processo_section(inp, scope="demo")
 
         # === Configurações ===
-        cfg_frame = tk.LabelFrame(tab, text=" Configurações ",
+        cfg_frame = tk.LabelFrame(inp, text=" Configurações ",
                                  bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
                                  font=("Verdana", 8, "bold"),
                                  bd=1, relief="solid")
@@ -5491,7 +5501,7 @@ class CalculadoraApp(tk.Tk):
 
         # ===== Alíquotas por Período (opcional) =====
         self._periodos_frame = tk.LabelFrame(
-            tab, text=" Alíquotas por Período (IPREM) ",
+            inp, text=" Alíquotas por Período (IPREM) ",
             bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
             font=("Verdana", 8, "bold"), bd=1, relief="solid")
         self._periodos_frame.pack(fill="x", pady=(0, 4))
@@ -5531,7 +5541,7 @@ class CalculadoraApp(tk.Tk):
         # começa oculto
 
         # Botões topo
-        top_bar = tk.Frame(tab, bg=COLOR_PANEL)
+        top_bar = tk.Frame(inp, bg=COLOR_PANEL)
         top_bar.pack(fill="x", pady=(0, 4))
         ttk.Button(top_bar, text="+ Competência",
                   style="BCBSmall.TButton",
@@ -5553,7 +5563,7 @@ class CalculadoraApp(tk.Tk):
         self.btn_demo_calc.pack(side="right", padx=2)
 
         # Tabela competências
-        comp_frame = tk.LabelFrame(tab, text=" Competências ",
+        comp_frame = tk.LabelFrame(inp, text=" Competências ",
                                   bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
                                   font=("Verdana", 8, "bold"),
                                   bd=1, relief="solid")
@@ -5596,7 +5606,7 @@ class CalculadoraApp(tk.Tk):
             self._demo_add_row()
 
         # Resultado
-        result_frame = tk.LabelFrame(tab, text=" Resultado do Demonstrativo ",
+        result_frame = tk.LabelFrame(res, text=" Resultado do Demonstrativo ",
                                     bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
                                     font=("Verdana", 8, "bold"),
                                     bd=1, relief="solid")
@@ -7942,7 +7952,7 @@ class CalculadoraApp(tk.Tk):
 
     def _atraso_export_pdf(self):
         path = filedialog.asksaveasfilename(
-            title="Salvar PDF",
+                        title="Salvar PDF",
             defaultextension=".pdf",
             filetypes=[("PDF", "*.pdf")],
             initialfile="atraso_parcela.pdf")
