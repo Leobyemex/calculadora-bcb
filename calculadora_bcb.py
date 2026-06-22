@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.28"
+APP_VERSION  = "2.9.29"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -676,9 +676,9 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
             total_seg = (atual_seg + juros_seg + multa_seg).quantize(Decimal("0.01"))
             total_pat = (atual_pat + juros_pat + multa_pat).quantize(Decimal("0.01"))
         else:
-            # Juros mensais (configurável, default 1%) × meses de atraso, sobre o valor original devido
-            juros_seg = (valor_seg * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
-            juros_pat = (valor_pat * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
+            # Juros mensais (configurável, default 1%) × meses de atraso, sobre o valor atualizado
+            juros_seg = (atual_seg * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
+            juros_pat = (atual_pat * juros_mes * meses_atraso).quantize(Decimal("0.0001"))
             multa_seg = Decimal("0")
             multa_pat = Decimal("0")
             total_seg = (atual_seg + juros_seg).quantize(Decimal("0.01"))
