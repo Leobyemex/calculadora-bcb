@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.29"
+APP_VERSION  = "2.9.30"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -3684,8 +3684,36 @@ class CalculadoraApp(tk.Tk):
         # continua acessível mesmo em telas menores. O tamanho da fonte é
         # ajustável pelo seletor "Tamanho" (Pequeno/Médio/Grande), lembrado
         # entre sessões.
-        self.geometry("1100x780")
+        try:
+            _sw = self.winfo_screenwidth()
+            _sh = self.winfo_screenheight()
+            _w = min(1180, max(1000, _sw - 80))
+            _h = min(940, max(700, _sh - 90))
+            self.geometry(f"{_w}x{_h}")
+        except Exception:
+            self.geometry("1100x860")
         self.minsize(820, 600)
+        # Abre maximizado para aproveitar toda a altura da tela: assim a aba
+        # Demonstrativo mostra entradas + resultado de uma vez. Dispara no
+        # momento em que a janela é exibida (<Map>), com fallback via after().
+        self._ja_maximizou = False
+        def _maximizar_inicial(_e=None):
+            if getattr(self, "_ja_maximizou", False):
+                return
+            self._ja_maximizou = True
+            try:
+                self.unbind("<Map>")
+            except Exception:
+                pass
+            try:
+                self.state("zoomed")
+            except Exception:
+                try:
+                    self.attributes("-zoomed", True)
+                except Exception:
+                    pass
+        self.bind("<Map>", _maximizar_inicial)
+        self.after(400, _maximizar_inicial)
 
         self.configure(bg=COLOR_BG)
         # Carrega a preferência de tamanho ANTES de montar a UI, para o
@@ -4618,39 +4646,20 @@ class CalculadoraApp(tk.Tk):
             tk.Label(cell, text=hint, bg=COLOR_PANEL, fg=COLOR_SUBTLE,
                     font=("Verdana", 7)).pack(anchor="e")
 
-    def _build_processo_section(self, parent, scope):
-        """Cria a seção colapsável 'Dados do Processo (cabeçalho do relatório)'
-        que adiciona o cabeçalho institucional do IPREM + dados preenchíveis do
-        servidor nos relatórios exportados (XLSX/PDF). `scope` é uma string
-        única ('lote' ou 'demo') pra distinguir as duas instâncias da seção."""
+    def _build_processo_section(self, parent, scope, collapsible=False, start_open=True):
+        """Seção 'Dados do Processo (cabeçalho do relatório)'.
+
+        Escopo 'lote' (collapsible=False): os 8 campos ficam inline.
+        Escopo 'demo' (collapsible=True): os campos foram movidos para uma
+        JANELA (popup) acionada por botão — assim NÃO ocupam espaço vertical
+        na aba e a tabela de Resultado nunca encolhe."""
         if not hasattr(self, "_processo_entries"):
             self._processo_entries = {}
+        if not hasattr(self, "_processo_data"):
+            self._processo_data = {}
+        if not hasattr(self, "_processo_status_lbls"):
+            self._processo_status_lbls = {}
 
-        frame = tk.LabelFrame(
-            parent, text=" Dados do Processo (cabeçalho do relatório) ",
-            bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
-            font=("Verdana", 8, "bold"), bd=1, relief="solid")
-        frame.pack(fill="x", pady=(0, 6))
-
-        # Aviso
-        tk.Label(
-            frame,
-            text="Estes campos são opcionais. Quando preenchidos, aparecem como "
-            "cabeçalho no Excel e PDF exportados desta aba.",
-            bg=COLOR_PANEL, fg="#9C7700", font=("Verdana", 7),
-            wraplength=900, justify="left", anchor="w"
-        ).pack(fill="x", padx=8, pady=(4, 2))
-
-        inner = tk.Frame(frame, bg=COLOR_PANEL)
-        inner.pack(fill="x", padx=8, pady=(4, 8))
-        inner.columnconfigure(1, weight=2)
-        inner.columnconfigure(3, weight=1)
-        inner.columnconfigure(5, weight=1)
-
-        # Linha 0: Servidor(a) | Registro Funcional | Data de Nascimento
-        # Linha 1: RG | CPF
-        # Linha 2: Órgão de Origem | Órgão Cessionário
-        # Linha 3: Período de Licença | Processo SEI nº
         campos = [
             (0, 0, "Servidor(a):",          "servidor",            30),
             (0, 2, "Registro Funcional:",   "registro_funcional",  16),
@@ -4662,21 +4671,111 @@ class CalculadoraApp(tk.Tk):
             (3, 0, "Período de Licença:",   "periodo_afastamento", 22),
             (3, 2, "Processo SEI nº:",      "processo_sei",        20),
         ]
-        entries = {}
-        for linha, col, label, chave, width in campos:
-            tk.Label(inner, text=label, bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
-                    font=("Verdana", 8, "bold"), anchor="e").grid(
-                row=linha, column=col, sticky="e", padx=(2, 4), pady=3)
-            e = _entry_make(inner, width=width, placeholder="")
-            e.grid(row=linha, column=col + 1, sticky="we", padx=2, pady=3)
-            entries[chave] = e
 
-        self._processo_entries[scope] = entries
+        frame = tk.LabelFrame(
+            parent, text=" Dados do Processo (cabeçalho do relatório) ",
+            bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+            font=("Verdana", 8, "bold"), bd=1, relief="solid")
+        frame.pack(fill="x", pady=(0, 6))
+
+        def _build_fields(container):
+            tk.Label(
+                container,
+                text="Estes campos são opcionais. Quando preenchidos, aparecem "
+                "como cabeçalho no Excel e PDF exportados desta aba.",
+                bg=COLOR_PANEL, fg="#9C7700", font=("Verdana", 7),
+                wraplength=620, justify="left", anchor="w"
+            ).pack(fill="x", padx=8, pady=(4, 6))
+            inner = tk.Frame(container, bg=COLOR_PANEL)
+            inner.pack(fill="x", padx=8, pady=(0, 8))
+            inner.columnconfigure(1, weight=2)
+            inner.columnconfigure(3, weight=1)
+            inner.columnconfigure(5, weight=1)
+            ents = {}
+            for linha, col, label, chave, width in campos:
+                tk.Label(inner, text=label, bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+                        font=("Verdana", 8, "bold"), anchor="e").grid(
+                    row=linha, column=col, sticky="e", padx=(2, 4), pady=3)
+                e = _entry_make(inner, width=width, placeholder="")
+                e.grid(row=linha, column=col + 1, sticky="we", padx=2, pady=3)
+                ents[chave] = e
+            return ents
+
+        if collapsible:
+            # ---- escopo demo: campos vão para um POPUP ----
+            self._processo_data.setdefault(scope, {c[3]: "" for c in campos})
+
+            def _atualizar_status():
+                lbl = self._processo_status_lbls.get(scope)
+                if not lbl:
+                    return
+                preenchidos = any((v or "").strip()
+                                  for v in self._processo_data[scope].values())
+                if preenchidos:
+                    nome = (self._processo_data[scope].get("servidor") or "").strip()
+                    txt = "✓ dados preenchidos" + (f" — {nome}" if nome else "")
+                    lbl.config(text=txt, fg="#1A7A1A")
+                else:
+                    lbl.config(text="(nenhum dado preenchido)", fg=COLOR_SUBTLE)
+
+            def _abrir_dialog():
+                win = tk.Toplevel(self)
+                win.title("Dados do Processo — cabeçalho do relatório")
+                win.configure(bg=COLOR_PANEL)
+                win.transient(self)
+                wrap = tk.Frame(win, bg=COLOR_PANEL)
+                wrap.pack(fill="both", expand=True, padx=12, pady=12)
+                ents = _build_fields(wrap)
+                for chave, e in ents.items():
+                    _entry_set(e, self._processo_data[scope].get(chave, ""))
+
+                def _salvar_fechar():
+                    for chave, e in ents.items():
+                        self._processo_data[scope][chave] = _entry_value(e).strip()
+                    _atualizar_status()
+                    win.destroy()
+
+                btnbar = tk.Frame(win, bg=COLOR_PANEL)
+                btnbar.pack(fill="x", padx=12, pady=(0, 12))
+                ttk.Button(btnbar, text="Salvar e fechar", style="BCB.TButton",
+                           command=_salvar_fechar).pack(side="right")
+                ttk.Button(btnbar, text="Cancelar", style="BCBSmall.TButton",
+                           command=win.destroy).pack(side="right", padx=(0, 6))
+                win.protocol("WM_DELETE_WINDOW", _salvar_fechar)
+                win.update_idletasks()
+                try:
+                    x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
+                    y = self.winfo_rooty() + 90
+                    win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+                except Exception:
+                    pass
+                win.grab_set()
+                win.focus_set()
+
+            btnrow = tk.Frame(frame, bg=COLOR_PANEL)
+            btnrow.pack(fill="x", padx=8, pady=6)
+            ttk.Button(
+                btnrow,
+                text="Preencher dados do processo (cabeçalho do relatório)…",
+                style="BCBSmall.TButton", command=_abrir_dialog
+            ).pack(side="left")
+            lbl = tk.Label(btnrow, text="(nenhum dado preenchido)",
+                           bg=COLOR_PANEL, fg=COLOR_SUBTLE, font=("Verdana", 8))
+            lbl.pack(side="left", padx=10)
+            self._processo_status_lbls[scope] = lbl
+        else:
+            # ---- escopo lote: inline, como antes ----
+            self._processo_entries[scope] = _build_fields(frame)
+
         return frame
 
     def _coletar_dados_processo(self, scope):
         """Retorna dict com os 8 campos preenchidos para o scope. Se todos
         estiverem vazios, retorna None (assim a exportação omite o cabeçalho)."""
+        data = getattr(self, "_processo_data", {}).get(scope)
+        if data is not None:
+            dados = {k: (v or "").strip() for k, v in data.items()}
+            return dados if any(dados.values()) else None
         ents = getattr(self, "_processo_entries", {}).get(scope)
         if not ents:
             return None
@@ -5361,18 +5460,18 @@ class CalculadoraApp(tk.Tk):
             style="Info.TLabel"
         ).pack(fill="x", pady=(0, 6))
 
-        # ── Dividir aba: inputs (cima) / resultado (baixo) ────────────────
-        _demo_paned = ttk.PanedWindow(tab, orient="vertical")
-        _demo_paned.pack(fill="both", expand=True)
-        inp = tk.Frame(_demo_paned, bg=COLOR_PANEL)
-        _demo_paned.add(inp, weight=0)
-        res = tk.Frame(_demo_paned, bg=COLOR_PANEL)
-        _demo_paned.add(res, weight=1)
-        # Define posição inicial do sash após o widget ser renderizado
-        tab.after(200, lambda p=_demo_paned: p.sashpos(0, 450))
+        # ── Layout ESTÁTICO (sem divisor arrastável) ──────────────────────
+        # As entradas ficam em cima com a altura natural (sempre totalmente
+        # visíveis) e o resultado ocupa o espaço restante logo abaixo. A lista
+        # de Competências e a tabela de Resultado têm rolagem própria, então
+        # ao abrir já está tudo no lugar — sem precisar arrastar nada.
+        inp = tk.Frame(tab, bg=COLOR_PANEL)
+        inp.pack(fill="x", side="top")
+        res = tk.Frame(tab, bg=COLOR_PANEL)
+        res.pack(fill="both", expand=True, side="top", pady=(6, 0))
 
         # Seção: Dados do Processo (cabeçalho do relatório)
-        self._build_processo_section(inp, scope="demo")
+        self._build_processo_section(inp, scope="demo", collapsible=True, start_open=False)
 
         # === Configurações ===
         cfg_frame = tk.LabelFrame(inp, text=" Configurações ",
@@ -5499,7 +5598,10 @@ class CalculadoraApp(tk.Tk):
                 padx=(0, 4), pady=(10, 0))
 
 
-        # ===== Alíquotas por Período (opcional) =====
+        # ===== Alíquotas por Período (opcional) — editor em POPUP =====
+        # A barra na aba fica compacta (checkbox + botão). O editor das linhas
+        # de período abre numa JANELA, para NÃO ocupar espaço vertical na aba
+        # e o Resultado não encolher quando esta opção é ativada.
         self._periodos_frame = tk.LabelFrame(
             inp, text=" Alíquotas por Período (IPREM) ",
             bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
@@ -5517,13 +5619,25 @@ class CalculadoraApp(tk.Tk):
             command=self._demo_toggle_periodos)
         chk_p.pack(side="left", padx=(8, 4), pady=6)
 
-        ttk.Button(self._periodos_frame, text="Padrão IPREM/SP",
+        ttk.Button(self._periodos_frame, text="Configurar períodos…",
                    style="BCBSmall.TButton",
-                   command=self._demo_reset_periodos_iprem).pack(
-                       side="right", padx=8, pady=6)
+                   command=self._demo_abrir_periodos).pack(
+                       side="left", padx=4, pady=6)
 
-        # Container interno (mostrado/oculto)
-        self._periodos_inner = tk.Frame(self._periodos_frame, bg=COLOR_PANEL)
+        self._periodos_status = tk.Label(
+            self._periodos_frame, text="", bg=COLOR_PANEL,
+            fg=COLOR_SUBTLE, font=("Verdana", 7))
+        self._periodos_status.pack(side="left", padx=8)
+
+        # Janela (popup) com o editor — criada oculta; mantém as linhas vivas.
+        self._periodos_win = tk.Toplevel(self)
+        self._periodos_win.title("Alíquotas por Período (IPREM)")
+        self._periodos_win.configure(bg=COLOR_PANEL)
+        self._periodos_win.withdraw()
+        self._periodos_win.protocol("WM_DELETE_WINDOW", self._demo_fechar_periodos)
+
+        self._periodos_inner = tk.Frame(self._periodos_win, bg=COLOR_PANEL)
+        self._periodos_inner.pack(fill="both", expand=True, padx=12, pady=12)
         # Header
         _ph = tk.Frame(self._periodos_inner, bg=COLOR_BCB_BLUE)
         _ph.pack(fill="x")
@@ -5534,11 +5648,19 @@ class CalculadoraApp(tk.Tk):
                      padx=4, pady=3).pack(side="left", padx=1)
         self._periodos_rows_frame = tk.Frame(self._periodos_inner, bg=COLOR_PANEL)
         self._periodos_rows_frame.pack(fill="x")
-        ttk.Button(self._periodos_inner, text="+ Adicionar período",
+
+        _pbtns = tk.Frame(self._periodos_inner, bg=COLOR_PANEL)
+        _pbtns.pack(fill="x", pady=(8, 0))
+        ttk.Button(_pbtns, text="+ Adicionar período",
                    style="BCBSmall.TButton",
-                   command=self._demo_add_periodo).pack(side="left", pady=(4, 4), padx=4)
+                   command=self._demo_add_periodo).pack(side="left", padx=4)
+        ttk.Button(_pbtns, text="Padrão IPREM/SP",
+                   style="BCBSmall.TButton",
+                   command=self._demo_reset_periodos_iprem).pack(side="left", padx=4)
+        ttk.Button(_pbtns, text="Fechar", style="BCB.TButton",
+                   command=self._demo_fechar_periodos).pack(side="right", padx=4)
         self.periodos_rows = []
-        # começa oculto
+        self._demo_atualizar_status_periodos()
 
         # Botões topo
         top_bar = tk.Frame(inp, bg=COLOR_PANEL)
@@ -5581,7 +5703,7 @@ class CalculadoraApp(tk.Tk):
         canvas_frame = tk.Frame(comp_frame, bg=COLOR_PANEL)
         canvas_frame.pack(fill="x")
         self.demo_canvas = tk.Canvas(canvas_frame, bg=COLOR_PANEL,
-                                    height=140, highlightthickness=0)
+                                    height=118, highlightthickness=0)
         self.demo_canvas.pack(side="left", fill="x", expand=True)
         vsb = ttk.Scrollbar(canvas_frame, orient="vertical",
                            command=self.demo_canvas.yview)
@@ -5713,11 +5835,77 @@ class CalculadoraApp(tk.Tk):
 
     def _demo_toggle_periodos(self):
         if self.usar_periodos_var.get():
-            self._periodos_inner.pack(fill="x", padx=8, pady=(0, 8))
             if not self.periodos_rows:
                 self._demo_reset_periodos_iprem()
+            self._demo_abrir_periodos()
         else:
-            self._periodos_inner.pack_forget()
+            self._demo_fechar_periodos()
+        self._demo_atualizar_status_periodos()
+
+    def _demo_abrir_periodos(self):
+        """Abre a janela (popup) de edição das alíquotas por período."""
+        if not self.usar_periodos_var.get():
+            self.usar_periodos_var.set(True)
+        if not self.periodos_rows:
+            self._demo_reset_periodos_iprem()
+        win = self._periodos_win
+        win.deiconify()
+        win.transient(self)
+        try:
+            win.resizable(True, True)
+        except Exception:
+            pass
+        win.update_idletasks()
+        try:
+            rw, rh = win.winfo_reqwidth(), win.winfo_reqheight()
+            x = self.winfo_rootx() + (self.winfo_width() - rw) // 2
+            y = self.winfo_rooty() + 120
+            win.geometry(f"{rw}x{rh}+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+        win.lift()
+        win.focus_set()
+        self._demo_atualizar_status_periodos()
+
+    def _demo_fechar_periodos(self):
+        """Fecha (oculta) a janela de períodos; as linhas continuam guardadas."""
+        try:
+            self._periodos_win.withdraw()
+        except Exception:
+            pass
+        self._demo_atualizar_status_periodos()
+
+    def _demo_atualizar_status_periodos(self):
+        lbl = getattr(self, "_periodos_status", None)
+        if lbl is None:
+            return
+        usar = getattr(self, "usar_periodos_var", None)
+        n = len(getattr(self, "periodos_rows", []))
+        if usar is not None and usar.get() and n:
+            lbl.config(text=f"✓ {n} período(s) configurado(s)", fg="#1A7A1A")
+        else:
+            lbl.config(text="(usando alíquotas fixas das Configurações)",
+                       fg=COLOR_SUBTLE)
+
+    def _demo_ajustar_janela_periodos(self):
+        """Reajusta o tamanho da janela de períodos ao conteúdo, para que os
+        botões (+ Adicionar, Padrão, Fechar) fiquem sempre visíveis ao
+        adicionar/remover linhas."""
+        win = getattr(self, "_periodos_win", None)
+        if win is None:
+            return
+        try:
+            if win.state() != "normal":
+                return
+        except Exception:
+            return
+        try:
+            win.update_idletasks()
+            # Só o tamanho (sem posição): o Windows mantém a janela no lugar e
+            # ela cresce/encolhe para sempre mostrar os botões.
+            win.geometry(f"{win.winfo_reqwidth()}x{win.winfo_reqheight()}")
+        except Exception:
+            pass
 
     def _demo_reset_periodos_iprem(self):
         """Preenche com as alíquotas históricas padrão IPREM/SP."""
@@ -5731,6 +5919,8 @@ class CalculadoraApp(tk.Tk):
         ]
         for ini, fim, seg, pat in padrao:
             self._demo_add_periodo(ini, fim, seg, pat)
+        self._demo_atualizar_status_periodos()
+        self._demo_ajustar_janela_periodos()
 
     def _demo_add_periodo(self, ini="", fim="", seg="", pat=""):
         """Adiciona uma linha de período de alíquota."""
@@ -5770,10 +5960,14 @@ class CalculadoraApp(tk.Tk):
             rd["frame"].destroy()
             if rd in self.periodos_rows:
                 self.periodos_rows.remove(rd)
+            self._demo_atualizar_status_periodos()
+            self._demo_ajustar_janela_periodos()
 
         ttk.Button(row_frame, text="✕", style="BCBSmall.TButton",
                    width=3, command=remove_row).pack(side="left", padx=6)
         self.periodos_rows.append(row_data)
+        self._demo_atualizar_status_periodos()
+        self._demo_ajustar_janela_periodos()
 
     def _demo_toggle_selic_fields(self, event=None):
         is_selic = self.cb_demo_indice.get() == "SELIC"

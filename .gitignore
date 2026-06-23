@@ -1,0 +1,17 @@
+# Backups da Calculadora
+calculadora_bcb.bak*.py
+*.bak
+
+# Artefatos de build / PyInstaller
+build/
+dist/
+__pycache__/
+*.pyc
+bin-linux/
+
+# Pasta aninhada/legada
+calculadora-bcb-app/
+
+# Logs e temporários
+calculadora_log.txt
+*.tmp
