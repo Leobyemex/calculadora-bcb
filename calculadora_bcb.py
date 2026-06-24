@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.30"
+APP_VERSION  = "2.9.31"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -3839,49 +3839,49 @@ class CalculadoraApp(tk.Tk):
                           side="right")
 
     def _baixar_e_atualizar(self, asset_url: str):
-        """Baixa o novo .zip e cria updater.bat para substituição da pasta."""
+        """Baixa o .zip da release e substitui o executavel (.exe) em uso.
+
+        Robusto: encontra o .exe novo em qualquer subpasta do zip e o copia
+        por cima do executavel atual (preservando o nome/local do usuario),
+        com retentativa enquanto o .exe estiver travado pelo app fechando."""
         import sys
 
         win = tk.Toplevel(self)
-        win.title("Baixando atualização…")
+        win.title("Baixando atualizacao…")
         win.resizable(False, False)
         win.grab_set()
         win.configure(bg=COLOR_BG)
         win.geometry("380x130")
         win.transient(self)
 
-        tk.Label(win, text="Baixando nova versão, aguarde…",
+        tk.Label(win, text="Baixando nova versao, aguarde…",
                  font=("Segoe UI", 10), bg=COLOR_BG, fg=COLOR_TEXT).pack(
                      pady=(18, 6))
         bar = ttk.Progressbar(win, mode="indeterminate", length=340)
         bar.pack(pady=4)
         bar.start(10)
         status_lbl = tk.Label(win, text="Conectando…",
-                              font=("Segoe UI", 8), bg=COLOR_BG,
-                              fg="#666666")
+                              font=("Segoe UI", 8), bg=COLOR_BG, fg="#666666")
         status_lbl.pack()
 
         def _worker():
             try:
-                # Só atualiza automaticamente na versão compilada (frozen)
+                # Auto-update so na versao compilada (.exe)
                 if not getattr(sys, "frozen", False):
                     self.after(0, lambda: (
                         bar.stop(), win.destroy(),
                         messagebox.showinfo(
                             "Desenvolvimento",
-                            "Auto-update disponível apenas na versão compilada.",
+                            "Auto-update disponivel apenas na versao compilada.",
                             parent=self)
                     ))
                     return
 
-                current_exe  = sys.executable
-                exe_dir      = os.path.dirname(current_exe)   # pasta da app
-                app_parent   = os.path.dirname(exe_dir)       # pasta PAI
-                app_dir_name = os.path.basename(exe_dir)      # ex.: "CalculadoraBCB"
-                zip_path     = os.path.join(exe_dir, "_update.zip")
-                temp_dir     = os.path.join(app_parent, "_update_temp")
-                new_app_dir  = os.path.join(temp_dir, app_dir_name)
-                bat_path     = os.path.join(app_parent, "updater.bat")
+                current_exe = sys.executable           # .exe em uso (qualquer pasta/nome)
+                exe_dir     = os.path.dirname(current_exe)
+                zip_path    = os.path.join(exe_dir, "_update.zip")
+                temp_dir    = os.path.join(exe_dir, "_update_temp")
+                bat_path    = os.path.join(exe_dir, "_updater.bat")
 
                 # Download do ZIP
                 self.after(0, lambda: status_lbl.configure(
@@ -3904,19 +3904,33 @@ class CalculadoraApp(tk.Tk):
                             self.after(0, lambda p=pct: status_lbl.configure(
                                 text=f"Baixando… {p}%"))
 
-                # Cria updater.bat na pasta PAI (fora da app, para não ser deletado)
-                # O bat: extrai o ZIP → copia os arquivos novos → reinicia o app
+                # Bat: espera o app fechar, extrai o zip, localiza o .exe novo
+                # (em qualquer subpasta) e o copia por cima do executavel atual,
+                # com retentativa, depois reinicia. Independe de nome de pasta.
                 ps_cmd = (
                     f"Expand-Archive -LiteralPath '{zip_path}' "
                     f"-DestinationPath '{temp_dir}' -Force"
                 )
                 bat_content = (
                     "@echo off\r\n"
+                    "chcp 65001 >nul\r\n"
                     "timeout /t 2 /nobreak >nul\r\n"
                     f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{ps_cmd}"\r\n'
-                    f'robocopy "{new_app_dir}" "{exe_dir}" /E /IS /IT /NFL /NDL /NJH /NJS /NP\r\n'
-                    f'rmdir /S /Q "{temp_dir}"\r\n'
-                    f'del "{zip_path}"\r\n'
+                    'set "NOVO="\r\n'
+                    f'for /r "{temp_dir}" %%F in (CalculadoraBCB.exe) do set "NOVO=%%F"\r\n'
+                    f'if not defined NOVO for /r "{temp_dir}" %%F in (*.exe) do set "NOVO=%%F"\r\n'
+                    'if not defined NOVO goto limpa\r\n'
+                    'set /a TRIES=0\r\n'
+                    ':copia\r\n'
+                    f'copy /Y "%NOVO%" "{current_exe}" >nul 2>&1\r\n'
+                    'if not errorlevel 1 goto limpa\r\n'
+                    'set /a TRIES+=1\r\n'
+                    'if %TRIES% GEQ 30 goto limpa\r\n'
+                    'timeout /t 1 /nobreak >nul\r\n'
+                    'goto copia\r\n'
+                    ':limpa\r\n'
+                    f'rmdir /S /Q "{temp_dir}" 2>nul\r\n'
+                    f'del "{zip_path}" 2>nul\r\n'
                     f'start "" "{current_exe}"\r\n'
                     'del "%~f0"\r\n'
                 )
@@ -3931,7 +3945,7 @@ class CalculadoraApp(tk.Tk):
                     win.destroy(),
                     messagebox.showerror(
                         "Erro ao atualizar",
-                        f"Não foi possível baixar a atualização:\n{e}",
+                        f"Nao foi possivel baixar a atualizacao:\n{e}",
                         parent=self)
                 ))
 
