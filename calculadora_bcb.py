@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.31"
+APP_VERSION  = "2.9.32"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -3855,11 +3855,14 @@ class CalculadoraApp(tk.Tk):
                           side="right")
 
     def _baixar_e_atualizar(self, asset_url: str):
-        """Baixa o .zip da release e substitui o executavel (.exe) em uso.
+        """Baixa o .zip da release (formato pasta/onedir) e substitui a PASTA
+        do app (executavel + _internal), depois reinicia.
 
-        Robusto: encontra o .exe novo em qualquer subpasta do zip e o copia
-        por cima do executavel atual (preservando o nome/local do usuario),
-        com retentativa enquanto o .exe estiver travado pelo app fechando."""
+        Robusto: acha a pasta nova pelo executavel dentro do zip (independe do
+        nome da pasta do usuario) e sobrescreve tudo com robocopy, com
+        retentativa enquanto os arquivos estiverem travados pelo app fechando.
+        Substituir a _internal inteira evita a mistura onefile/onedir que
+        causava o erro _PYI_APPLICATION_HOME_DIR."""
         import sys
 
         win = tk.Toplevel(self)
@@ -3920,9 +3923,12 @@ class CalculadoraApp(tk.Tk):
                             self.after(0, lambda p=pct: status_lbl.configure(
                                 text=f"Baixando… {p}%"))
 
-                # Bat: espera o app fechar, extrai o zip, localiza o .exe novo
-                # (em qualquer subpasta) e o copia por cima do executavel atual,
-                # com retentativa, depois reinicia. Independe de nome de pasta.
+                # Bat: espera o app fechar, extrai o zip, localiza a PASTA nova
+                # (a que contem CalculadoraBCB.exe) e copia TODO o conteudo dela
+                # (executavel + _internal) por cima da pasta do app, com
+                # retentativa; depois reinicia. Independe do nome da pasta do
+                # usuario e sobrescreve a _internal inteira (evita a mistura
+                # onefile/onedir que causava o erro _PYI_APPLICATION_HOME_DIR).
                 ps_cmd = (
                     f"Expand-Archive -LiteralPath '{zip_path}' "
                     f"-DestinationPath '{temp_dir}' -Force"
@@ -3932,14 +3938,14 @@ class CalculadoraApp(tk.Tk):
                     "chcp 65001 >nul\r\n"
                     "timeout /t 2 /nobreak >nul\r\n"
                     f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{ps_cmd}"\r\n'
-                    'set "NOVO="\r\n'
-                    f'for /r "{temp_dir}" %%F in (CalculadoraBCB.exe) do set "NOVO=%%F"\r\n'
-                    f'if not defined NOVO for /r "{temp_dir}" %%F in (*.exe) do set "NOVO=%%F"\r\n'
-                    'if not defined NOVO goto limpa\r\n'
+                    'set "SRC="\r\n'
+                    f'for /r "{temp_dir}" %%F in (CalculadoraBCB.exe) do set "SRC=%%~dpF"\r\n'
+                    f'if not defined SRC for /r "{temp_dir}" %%F in (*.exe) do set "SRC=%%~dpF"\r\n'
+                    'if not defined SRC goto limpa\r\n'
                     'set /a TRIES=0\r\n'
                     ':copia\r\n'
-                    f'copy /Y "%NOVO%" "{current_exe}" >nul 2>&1\r\n'
-                    'if not errorlevel 1 goto limpa\r\n'
+                    f'robocopy "%SRC%." "{exe_dir}" /E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n'
+                    'if %ERRORLEVEL% LSS 8 goto limpa\r\n'
                     'set /a TRIES+=1\r\n'
                     'if %TRIES% GEQ 30 goto limpa\r\n'
                     'timeout /t 1 /nobreak >nul\r\n'

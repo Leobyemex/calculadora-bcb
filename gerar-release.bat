@@ -3,13 +3,14 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ============================================================
-echo  GERAR RELEASE (.exe + .zip para auto-update)
+echo  GERAR RELEASE (formato pasta/onedir) - exe + zip
 echo ============================================================
 echo.
 
 if not exist calculadora_bcb.py (
     echo ERRO: calculadora_bcb.py nao encontrado nesta pasta!
-    pause & exit /b 1
+    pause
+    exit /b 1
 )
 
 echo --- Versao ---
@@ -26,33 +27,34 @@ echo --- Dependencias ---
 python -m pip install --upgrade pip >nul 2>&1
 python -m pip install pyinstaller openpyxl reportlab --upgrade
 
-echo --- Compilando .exe (3-5 min) ---
-python -m PyInstaller --onefile --windowed --name CalculadoraBCB --noconfirm ^
+echo --- Compilando (formato pasta) - 3 a 5 min ---
+python -m PyInstaller --onedir --windowed --name CalculadoraBCB --noconfirm ^
   --collect-all openpyxl --collect-all reportlab ^
   calculadora_bcb.py
-if errorlevel 1 ( echo ERRO na compilacao! & pause & exit /b 1 )
+if errorlevel 1 (
+    echo ERRO na compilacao!
+    pause
+    exit /b 1
+)
 
 echo --- Empacotando .zip para a release ---
-REM Estrutura esperada pelo updater: CalculadoraBCB\CalculadoraBCB.exe
-if exist dist\_pkg rmdir /s /q dist\_pkg
-mkdir dist\_pkg\CalculadoraBCB
-copy /Y dist\CalculadoraBCB.exe dist\_pkg\CalculadoraBCB\CalculadoraBCB.exe >nul
+REM onedir gera dist\CalculadoraBCB\ (exe + _internal). Zipa a PASTA inteira.
 if exist dist\CalculadoraBCB.zip del dist\CalculadoraBCB.zip
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path 'dist\_pkg\CalculadoraBCB' -DestinationPath 'dist\CalculadoraBCB.zip' -Force"
-rmdir /s /q dist\_pkg
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path 'dist\CalculadoraBCB' -DestinationPath 'dist\CalculadoraBCB.zip' -Force"
 
-REM limpeza de temporarios da compilacao
 if exist build rmdir /s /q build
 if exist CalculadoraBCB.spec del CalculadoraBCB.spec
 
 echo.
 echo ============================================================
 echo  PRONTO!
-echo    Executavel:                 dist\CalculadoraBCB.exe
+echo    Pasta do app:               dist\CalculadoraBCB\  (exe + _internal)
 echo    ZIP p/ anexar na release:   dist\CalculadoraBCB.zip
 echo.
-echo  PROXIMO PASSO:
-echo   1) No GitHub, crie a release com a tag  v2.9.31
+echo  PROXIMOS PASSOS:
+echo   1) No GitHub, crie a release com a tag  v2.9.32
 echo   2) Anexe o arquivo  dist\CalculadoraBCB.zip  na release
+echo   3) Para novos usuarios, distribua a PASTA dist\CalculadoraBCB
+echo      (a pasta inteira, nao apenas o .exe)
 echo ============================================================
 pause
