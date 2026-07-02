@@ -1002,6 +1002,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
     credito_13_corrigido = Decimal("0.00")
     credito_13_fator = Decimal("1")
     credito_13_op = "subtrair"
+    credito_13_juros = Decimal("0.00")
     if credito_13 and credito_13.get("valor"):
         c13_data = credito_13["data_fato_gerador"]
         c13_valor = Decimal(str(credito_13["valor"]))
@@ -1023,12 +1024,20 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
             data_atual.month, data_atual.year,
         )
         credito_13_corrigido = (c13_valor * credito_13_fator).quantize(Decimal("0.01"))
+        # Juros do 13º: SÓ quando for SOMAR (+) e os juros do débito estiverem
+        # ligados — mesma regra do débito (mesma taxa × mesmos meses de atraso,
+        # sobre o 13º já corrigido pelo IPC-FIPE). No "subtrair" fica sem juros.
+        if aplicar_juros and credito_13_op == "somar":
+            credito_13_juros = (
+                credito_13_corrigido * juros_mes * meses_atraso_juros
+            ).quantize(Decimal("0.01"))
 
     # 8) Total final
     sinal_c13 = Decimal("1") if credito_13_op == "somar" else Decimal("-1")
     total = (subtotal + honorarios
             - total_parcelas_corrigido
-            + sinal_c13 * credito_13_corrigido).quantize(Decimal("0.01"))
+            + sinal_c13 * credito_13_corrigido
+            + credito_13_juros).quantize(Decimal("0.01"))
 
     return {
         "config": config,
@@ -1065,6 +1074,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
                           "fator": credito_13_fator,
                           "valor_corrigido": credito_13_corrigido,
                           "operacao": credito_13_op,
+                          "juros": credito_13_juros,
                       }),
         "total": total,
     }
@@ -3197,6 +3207,12 @@ def _cob_linhas_demonstrativo(res):
         sinal_txt = "(+)" if op == "somar" else "(−)"
         linhas.append((f"{sinal_txt} 13º salário (IPC-FIPE, fator {fmt_fator(c13['fator'])})",
                       "R$ " + fmt_brl(c13["valor_corrigido"]), False, op == "subtrair"))
+        c13_juros = c13.get("juros", Decimal("0.00"))
+        if c13_juros and c13_juros > 0:
+            pct = f"{float(res['juros_mensais_pct'])*100:.1f}".replace(".", ",")
+            meses = f"{float(res['meses_atraso_juros']):.2f}".replace(".", ",")
+            linhas.append((f"(+) Juros do 13º ({pct}% a.m. x {meses} meses)",
+                          "R$ " + fmt_brl(c13_juros), False, False))
     linhas.append(("TOTAL FINAL", "R$ " + fmt_brl(res["total"]), True, False))
     return linhas
 
@@ -7740,6 +7756,12 @@ class CalculadoraApp(tk.Tk):
             linha(r, f"{sinal_c13} 13º salário (IPC-FIPE, fator {fmt_fator(c13['fator'])}):",
                   f"R$ {fmt_brl(c13['valor_corrigido'])}",
                   color=cor_c13); r += 1
+            c13_juros = c13.get("juros", Decimal("0.00"))
+            if c13_juros and c13_juros > 0:
+                pct = float(res["juros_mensais_pct"]) * 100
+                linha(r, f"(+) Juros do 13º ({pct:.1f}% a.m. × {float(res['meses_atraso_juros']):.2f} meses):".replace(".", ","),
+                      f"R$ {fmt_brl(c13_juros)}",
+                      color=COLOR_VERDE); r += 1
 
         ttk.Separator(box, orient="horizontal").pack(fill="x", padx=14)
 
