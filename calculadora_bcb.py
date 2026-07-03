@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.32"
+APP_VERSION  = "2.9.33"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -1003,6 +1003,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
     credito_13_fator = Decimal("1")
     credito_13_op = "subtrair"
     credito_13_juros = Decimal("0.00")
+    credito_13_meses_juros = Decimal("0")
     if credito_13 and credito_13.get("valor"):
         c13_data = credito_13["data_fato_gerador"]
         c13_valor = Decimal(str(credito_13["valor"]))
@@ -1025,11 +1026,23 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
         )
         credito_13_corrigido = (c13_valor * credito_13_fator).quantize(Decimal("0.01"))
         # Juros do 13º: SÓ quando for SOMAR (+) e os juros do débito estiverem
-        # ligados — mesma regra do débito (mesma taxa × mesmos meses de atraso,
-        # sobre o 13º já corrigido pelo IPC-FIPE). No "subtrair" fica sem juros.
+        # ligados. Base dos meses: do mês SUBSEQUENTE ao pagamento (Data do
+        # Fato Gerador) até a data de atualização, em meses inteiros; taxa igual
+        # à do débito, sobre o 13º já corrigido pelo IPC-FIPE. No "subtrair"
+        # fica sem juros. Ex.: fato gerador 12/2023 -> inicia 01/2024; ate
+        # 07/2026 = 30 meses.
         if aplicar_juros and credito_13_op == "somar":
+            if c13_data.month == 12:
+                _m13i, _y13i = 1, c13_data.year + 1
+            else:
+                _m13i, _y13i = c13_data.month + 1, c13_data.year
+            _meses13 = ((data_atual.year - _y13i) * 12
+                        + (data_atual.month - _m13i))
+            if _meses13 < 0:
+                _meses13 = 0
+            credito_13_meses_juros = Decimal(_meses13)
             credito_13_juros = (
-                credito_13_corrigido * juros_mes * meses_atraso_juros
+                credito_13_corrigido * juros_mes * credito_13_meses_juros
             ).quantize(Decimal("0.01"))
 
     # 8) Total final
@@ -1075,6 +1088,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
                           "valor_corrigido": credito_13_corrigido,
                           "operacao": credito_13_op,
                           "juros": credito_13_juros,
+                          "meses_juros": credito_13_meses_juros,
                       }),
         "total": total,
     }
@@ -3210,7 +3224,7 @@ def _cob_linhas_demonstrativo(res):
         c13_juros = c13.get("juros", Decimal("0.00"))
         if c13_juros and c13_juros > 0:
             pct = f"{float(res['juros_mensais_pct'])*100:.1f}".replace(".", ",")
-            meses = f"{float(res['meses_atraso_juros']):.2f}".replace(".", ",")
+            meses = f"{float(c13.get('meses_juros', 0)):.2f}".replace(".", ",")
             linhas.append((f"(+) Juros do 13º ({pct}% a.m. x {meses} meses)",
                           "R$ " + fmt_brl(c13_juros), False, False))
     linhas.append(("TOTAL FINAL", "R$ " + fmt_brl(res["total"]), True, False))
@@ -7765,7 +7779,7 @@ class CalculadoraApp(tk.Tk):
             c13_juros = c13.get("juros", Decimal("0.00"))
             if c13_juros and c13_juros > 0:
                 pct = float(res["juros_mensais_pct"]) * 100
-                linha(r, f"(+) Juros do 13º ({pct:.1f}% a.m. × {float(res['meses_atraso_juros']):.2f} meses):".replace(".", ","),
+                linha(r, f"(+) Juros do 13º ({pct:.1f}% a.m. × {float(c13.get('meses_juros', 0)):.2f} meses):".replace(".", ","),
                       f"R$ {fmt_brl(c13_juros)}",
                       color=COLOR_VERDE); r += 1
 
