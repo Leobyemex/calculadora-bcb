@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.33"
+APP_VERSION  = "2.9.34"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -756,7 +756,7 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
 # - Juros 1% a.m. a partir da data de notificação (configurável)
 # - Honorários 10% (sobre o total atualizado + multa + juros)
 # - Abatimento de parcelas pagas (com ou sem correção)
-# - Abatimento de 13º como crédito (corrigido por IPC-FIPE)
+# - Abatimento de 13º como crédito (corrigido pelo mesmo índice do débito)
 
 def calcular_cobranca_amigavel(config, progress_cb=None):
     """
@@ -997,7 +997,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
         total_parcelas_corrigido += p_corrigido
     total_parcelas_corrigido = total_parcelas_corrigido.quantize(Decimal("0.01"))
 
-    # 7) 13º Salário (IPC-FIPE) — pode somar ou subtrair
+    # 7) 13º Salário (mesmo índice do débito) — pode somar ou subtrair
     credito_13 = config.get("credito_13")
     credito_13_corrigido = Decimal("0.00")
     credito_13_fator = Decimal("1")
@@ -1008,19 +1008,22 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
         c13_data = credito_13["data_fato_gerador"]
         c13_valor = Decimal(str(credito_13["valor"]))
         credito_13_op = credito_13.get("operacao", "subtrair")
-        # Buscar série IPC-FIPE separadamente
-        cfg_ipc = INDICES["IPC-SP"]
+        # Corrigir o 13º pelo MESMO índice do débito (ex.: IPCA), buscando a
+        # série no período próprio do 13º (fato gerador → atualização).
+        cfg_c13 = cfg_idx
         last_d = monthrange(data_atual.year, data_atual.month)[1]
-        di_ipc = f"01/{c13_data.month:02d}/{c13_data.year}"
-        df_ipc = f"{last_d:02d}/{data_atual.month:02d}/{data_atual.year}"
+        di_c13 = f"01/{c13_data.month:02d}/{c13_data.year}"
+        df_c13 = f"{last_d:02d}/{data_atual.month:02d}/{data_atual.year}"
         if progress_cb:
-            progress_cb("Buscando IPC-FIPE para o 13º...")
-        dados_ipc = fetch_serie_em_lotes(cfg_ipc["serie"], di_ipc, df_ipc,
+            progress_cb(f"Buscando {cfg_c13['name']} para o 13º...")
+        dados_c13 = fetch_serie_em_lotes(cfg_c13["serie"], di_c13, df_c13,
                                         progress_cb=progress_cb)
-        if not dados_ipc:
-            raise ValueError("A API do BCB não retornou dados de IPC-FIPE para o 13º.")
+        if not dados_c13:
+            raise ValueError(
+                f"A API do BCB não retornou dados de {cfg_c13['name']} "
+                f"para o 13º.")
         credito_13_fator, _ = _produtorio_indice_meses(
-            dados_ipc,
+            dados_c13,
             c13_data.month, c13_data.year,
             data_atual.month, data_atual.year,
         )
@@ -1028,7 +1031,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
         # Juros do 13º: SÓ quando for SOMAR (+) e os juros do débito estiverem
         # ligados. Base dos meses: do mês SUBSEQUENTE ao pagamento (Data do
         # Fato Gerador) até a data de atualização, em meses inteiros; taxa igual
-        # à do débito, sobre o 13º já corrigido pelo IPC-FIPE. No "subtrair"
+        # à do débito, sobre o 13º já corrigido pelo índice do débito. No "subtrair"
         # fica sem juros. Ex.: fato gerador 12/2023 -> inicia 01/2024; ate
         # 07/2026 = 30 meses.
         if aplicar_juros and credito_13_op == "somar":
@@ -1089,6 +1092,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
                           "operacao": credito_13_op,
                           "juros": credito_13_juros,
                           "meses_juros": credito_13_meses_juros,
+                          "indice": cfg_idx["name"],
                       }),
         "total": total,
     }
@@ -3219,7 +3223,7 @@ def _cob_linhas_demonstrativo(res):
         c13 = res["credito_13"]
         op = c13.get("operacao", "subtrair")
         sinal_txt = "(+)" if op == "somar" else "(−)"
-        linhas.append((f"{sinal_txt} 13º salário (IPC-FIPE, fator {fmt_fator(c13['fator'])})",
+        linhas.append((f"{sinal_txt} 13º salário ({c13.get('indice', res.get('indice_nome',''))}, fator {fmt_fator(c13['fator'])})",
                       "R$ " + fmt_brl(c13["valor_corrigido"]), False, op == "subtrair"))
         c13_juros = c13.get("juros", Decimal("0.00"))
         if c13_juros and c13_juros > 0:
@@ -6760,7 +6764,7 @@ class CalculadoraApp(tk.Tk):
         sep.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 6))
 
         self.cob_c13_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(abat_inner, text="13º Salário (IPC-FIPE)",
+        tk.Checkbutton(abat_inner, text="13º Salário (mesmo índice do débito)",
                       variable=self.cob_c13_var, bg=COLOR_PANEL,
                       fg=COLOR_BCB_BLUE, font=("Verdana", 9, "bold"),
                       activebackground=COLOR_PANEL, selectcolor="white",
@@ -7773,7 +7777,7 @@ class CalculadoraApp(tk.Tk):
             op_c13 = c13.get("operacao", "subtrair")
             sinal_c13 = "(+)" if op_c13 == "somar" else "(−)"
             cor_c13 = COLOR_VERDE if op_c13 == "somar" else COLOR_ERROR
-            linha(r, f"{sinal_c13} 13º salário (IPC-FIPE, fator {fmt_fator(c13['fator'])}):",
+            linha(r, f"{sinal_c13} 13º salário ({c13.get('indice', res.get('indice_nome',''))}, fator {fmt_fator(c13['fator'])}):",
                   f"R$ {fmt_brl(c13['valor_corrigido'])}",
                   color=cor_c13); r += 1
             c13_juros = c13.get("juros", Decimal("0.00"))
