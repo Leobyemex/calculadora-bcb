@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.34"
+APP_VERSION  = "2.9.35"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -1004,13 +1004,19 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
     credito_13_op = "subtrair"
     credito_13_juros = Decimal("0.00")
     credito_13_meses_juros = Decimal("0")
+    credito_13_indice = ""
     if credito_13 and credito_13.get("valor"):
         c13_data = credito_13["data_fato_gerador"]
         c13_valor = Decimal(str(credito_13["valor"]))
         credito_13_op = credito_13.get("operacao", "subtrair")
-        # Corrigir o 13º pelo MESMO índice do débito (ex.: IPCA), buscando a
-        # série no período próprio do 13º (fato gerador → atualização).
-        cfg_c13 = cfg_idx
+        # Índice do 13º conforme a operação: SOMAR (+) usa o mesmo índice do
+        # débito (ex.: IPCA); SUBTRAIR (−) usa IPC-FIPE. Busca a série no
+        # período próprio do 13º (fato gerador → atualização).
+        if credito_13_op == "somar":
+            cfg_c13 = cfg_idx
+        else:
+            cfg_c13 = INDICES["IPC-SP"]
+        credito_13_indice = cfg_c13["name"]
         last_d = monthrange(data_atual.year, data_atual.month)[1]
         di_c13 = f"01/{c13_data.month:02d}/{c13_data.year}"
         df_c13 = f"{last_d:02d}/{data_atual.month:02d}/{data_atual.year}"
@@ -1092,7 +1098,7 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
                           "operacao": credito_13_op,
                           "juros": credito_13_juros,
                           "meses_juros": credito_13_meses_juros,
-                          "indice": cfg_idx["name"],
+                          "indice": credito_13_indice,
                       }),
         "total": total,
     }
