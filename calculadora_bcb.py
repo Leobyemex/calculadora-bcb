@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.37"
+APP_VERSION  = "2.9.38"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -129,6 +129,122 @@ def _versao_maior(nova: str, atual: str) -> bool:
         return p_nova > p_atual
     except Exception:
         return False
+
+
+STAMP_FILENAME = "build_version.txt"   # gravado na _internal pelo gerar-release.bat
+
+
+def _localizar_pasta_app(raiz):
+    """Procura, dentro de `raiz`, a pasta MAIS RASA que contém um .exe E a
+    subpasta _internal (formato onedir). Retorna (pasta, nome_exe) ou
+    (None, None). Diferente do 'for /r' do .bat antigo, aqui a existência do
+    arquivo é realmente conferida."""
+    melhor = None
+    for dirpath, dirnames, filenames in os.walk(raiz):
+        exes = [f for f in filenames if f.lower().endswith(".exe")]
+        if not exes or not any(d.lower() == "_internal" for d in dirnames):
+            continue
+        nome = next((f for f in exes if f.lower() == "calculadorabcb.exe"), exes[0])
+        prof = os.path.relpath(dirpath, raiz).count(os.sep)
+        if melhor is None or prof < melhor[0]:
+            melhor = (prof, dirpath, nome)
+    return (melhor[1], melhor[2]) if melhor else (None, None)
+
+
+def _ps_str(s):
+    """Literal de string PowerShell (aspas simples; aspas internas duplicadas)."""
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def _ler_build_stamp():
+    """Versão gravada na pasta _internal durante o build (None se não houver)."""
+    base = getattr(_sys, "_MEIPASS", None)
+    if not base:
+        return None
+    try:
+        with open(os.path.join(base, STAMP_FILENAME), encoding="utf-8-sig") as f:
+            return f.read().strip().lstrip("v") or None
+    except Exception:
+        return None
+
+
+_PS_ATUALIZADOR = r"""$ErrorActionPreference = 'Continue'
+$appPid = @@PID@@
+$src    = @@SRC@@
+$srcExe = @@SRCEXE@@
+$dst    = @@DST@@
+$dstExe = @@DSTEXE@@
+$tmp    = @@TMP@@
+$zip    = @@ZIP@@
+$log    = @@LOG@@
+$falhou = @@FALHOU@@
+$reparo = @@REPARO@@
+$versao = @@VERSAO@@
+$scriptFile = @@SCRIPT@@
+function Log([string]$m) {
+    try { Add-Content -LiteralPath $log -Encoding UTF8 -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '  ' + $m) } catch {}
+}
+Log ('===== Atualizacao para a versao ' + $versao + ' =====')
+Log ('Origem : ' + $src)
+Log ('Destino: ' + $dst)
+try { Wait-Process -Id $appPid -Timeout 90 -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Milliseconds 800
+$novoHash = ''
+try { $novoHash = (Get-FileHash -LiteralPath $srcExe -Algorithm SHA256).Hash } catch { Log ('Nao consegui ler o exe novo: ' + $_.Exception.Message) }
+$mesmoNome = ([IO.Path]::GetFileName($srcExe) -ieq [IO.Path]::GetFileName($dstExe))
+$ok = $false
+for ($i = 1; $i -le 30; $i++) {
+    & robocopy $src $dst /E /IS /IT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+    $rc = $LASTEXITCODE
+    if (-not $mesmoNome) {
+        try { Copy-Item -LiteralPath $srcExe -Destination $dstExe -Force -ErrorAction Stop } catch {}
+    }
+    $atual = ''
+    try { $atual = (Get-FileHash -LiteralPath $dstExe -Algorithm SHA256).Hash } catch {}
+    $exeOk = ($novoHash -ne '') -and ($atual -eq $novoHash)
+    if ($exeOk -and $rc -lt 8) {
+        $ok = $true
+        Log ('OK: arquivos substituidos (tentativa ' + $i + ', robocopy=' + $rc + ')')
+        break
+    }
+    Log ('Tentativa ' + $i + ': robocopy=' + $rc + ', exe_atualizado=' + $exeOk)
+    Start-Sleep -Seconds 2
+}
+if ($ok) {
+    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $falhou -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $reparo -Force -ErrorAction SilentlyContinue
+} else {
+    Log ('FALHA: nao foi possivel substituir os arquivos. A versao nova ficou em: ' + $src)
+    try { Set-Content -LiteralPath $falhou -Encoding UTF8 -Value ($versao + '|' + $src) } catch {}
+}
+Start-Process -FilePath $dstExe -WorkingDirectory $dst
+Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue
+"""
+
+
+def _montar_script_atualizacao(app_pid, src_dir, src_exe, exe_dir, current_exe,
+                               temp_dir, zip_path, versao, script_path=""):
+    """Gera o script PowerShell que troca os arquivos do app (ver _baixar_e_atualizar)."""
+    subs = {
+        "@@PID@@":    str(int(app_pid)),
+        "@@SRC@@":    _ps_str(src_dir),
+        "@@SRCEXE@@": _ps_str(src_exe),
+        "@@DST@@":    _ps_str(exe_dir),
+        "@@DSTEXE@@": _ps_str(current_exe),
+        "@@TMP@@":    _ps_str(temp_dir),
+        "@@ZIP@@":    _ps_str(zip_path),
+        "@@LOG@@":    _ps_str(os.path.join(exe_dir, "_update_log.txt")),
+        "@@FALHOU@@": _ps_str(os.path.join(exe_dir, "_update_falhou.txt")),
+        "@@REPARO@@": _ps_str(os.path.join(exe_dir, "_reparo_tentado.txt")),
+        "@@VERSAO@@": _ps_str(versao),
+        "@@SCRIPT@@": _ps_str(script_path),
+    }
+    out = _PS_ATUALIZADOR
+    for k, v in subs.items():
+        out = out.replace(k, v)
+    return out.replace("\r\n", "\n").replace("\n", "\r\n")
 
 
 # ===================== Helpers de parsing/format ===================== #
@@ -3898,7 +4014,12 @@ class CalculadoraApp(tk.Tk):
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                 nova_versao = data.get("tag_name", "").lstrip("v")
-                if not nova_versao or not _versao_maior(nova_versao, APP_VERSION):
+                if not nova_versao:
+                    return
+                if not _versao_maior(nova_versao, APP_VERSION):
+                    # Mesma versão publicada: confere se a instalação está completa
+                    if not _versao_maior(APP_VERSION, nova_versao):
+                        self._verificar_reparo(data)
                     return
                 # Procura o asset .zip
                 asset_url = None
@@ -3917,12 +4038,27 @@ class CalculadoraApp(tk.Tk):
 
     def _mostrar_atualizacao(self, versao: str, asset_url, notes: str):
         """Dialog informando que há nova versão disponível."""
+        # A tentativa anterior falhou? (o atualizador grava _update_falhou.txt)
+        falhou_antes, falha_src, exe_dir = False, None, ""
+        try:
+            if getattr(_sys, "frozen", False):
+                exe_dir = os.path.dirname(os.path.abspath(_sys.executable))
+                fp = os.path.join(exe_dir, "_update_falhou.txt")
+                if os.path.exists(fp):
+                    falhou_antes = True
+                    with open(fp, encoding="utf-8-sig") as f:
+                        partes = f.read().strip().split("|", 1)
+                    if len(partes) == 2 and os.path.isdir(partes[1]):
+                        falha_src = partes[1]
+        except Exception:
+            pass
+
         win = tk.Toplevel(self)
         win.title("Atualização disponível")
         win.resizable(False, False)
         win.grab_set()
         win.configure(bg=COLOR_BG)
-        win.geometry("480x320")
+        win.geometry("520x400" if falhou_antes else "480x320")
         win.transient(self)
 
         # Cabeçalho
@@ -3939,6 +4075,13 @@ class CalculadoraApp(tk.Tk):
         # Notas
         body = tk.Frame(win, bg=COLOR_BG, padx=12, pady=10)
         body.pack(fill="both", expand=True)
+        if falhou_antes:
+            tk.Label(body,
+                     text=("⚠ A última tentativa de atualização automática não "
+                           "conseguiu substituir os arquivos neste computador. "
+                           "Tente de novo ou use 'Atualizar manualmente'."),
+                     font=("Segoe UI", 9, "bold"), bg=COLOR_BG, fg="#B00020",
+                     wraplength=490, justify="left").pack(anchor="w", pady=(0, 6))
         tk.Label(body, text="O que há de novo:", font=("Segoe UI", 9, "bold"),
                  bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w")
         txt = tk.Text(body, height=7, wrap="word",
@@ -3964,7 +4107,36 @@ class CalculadoraApp(tk.Tk):
                     parent=win)
                 return
             win.destroy()
-            self._baixar_e_atualizar(asset_url)
+            self._baixar_e_atualizar(asset_url, versao)
+
+        def _manual():
+            import webbrowser
+            if falha_src:
+                msg = ("A versão nova já foi baixada neste computador.\n\n"
+                       "1) Feche este aplicativo.\n"
+                       "2) Na pasta que vai abrir (versão nova), copie o "
+                       "CalculadoraBCB.exe e a pasta _internal.\n"
+                       f"3) Cole em:\n{exe_dir}\n"
+                       "   escolhendo 'Substituir os arquivos no destino'.\n"
+                       "4) Abra o CalculadoraBCB.exe novamente.")
+            else:
+                msg = ("1) Feche este aplicativo.\n"
+                       "2) Baixe o arquivo .zip na página que vai abrir e extraia.\n"
+                       "3) Entre na pasta 'CalculadoraBCB' extraída e copie o "
+                       "CalculadoraBCB.exe e a pasta _internal.\n"
+                       f"4) Cole em:\n{exe_dir}\n"
+                       "   escolhendo 'Substituir os arquivos no destino'.\n"
+                       "5) Abra o CalculadoraBCB.exe novamente.")
+            messagebox.showinfo("Atualizar manualmente", msg, parent=win)
+            try:
+                if falha_src:
+                    os.startfile(falha_src)
+                else:
+                    webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
+                if exe_dir:
+                    os.startfile(exe_dir)
+            except Exception:
+                pass
 
         tk.Button(btn_frame, text="Agora não", command=_fechar,
                   font=("Segoe UI", 9), relief="flat",
@@ -3976,30 +4148,73 @@ class CalculadoraApp(tk.Tk):
                       font=("Segoe UI", 9, "bold"), relief="flat",
                       bg=COLOR_BCB_BLUE, fg="white", padx=10, pady=4).pack(
                           side="right")
+        if falhou_antes:
+            tk.Button(btn_frame, text="Atualizar manualmente", command=_manual,
+                      font=("Segoe UI", 9), relief="flat",
+                      bg="#e8eef5", fg=COLOR_BCB_BLUE, padx=10, pady=4).pack(
+                          side="right", padx=(0, 6))
 
-    def _baixar_e_atualizar(self, asset_url: str):
-        """Baixa o .zip da release (formato pasta/onedir) e substitui a PASTA
-        do app (executavel + _internal), depois reinicia.
+    def _verificar_reparo(self, data):
+        """Roda na thread de verificação. Se o executável é desta versão mas a
+        pasta _internal veio de uma versão anterior (o atualizador antigo, até a
+        2.9.37, só consegue trocar o .exe), baixa o pacote completo da MESMA
+        versão e conclui a instalação — uma única vez por versão."""
+        try:
+            if not getattr(_sys, "frozen", False):
+                return
+            if _ler_build_stamp() == APP_VERSION:
+                return
+            exe_dir = os.path.dirname(os.path.abspath(_sys.executable))
+            marca = os.path.join(exe_dir, "_reparo_tentado.txt")
+            try:
+                with open(marca, encoding="utf-8") as f:
+                    if f.read().strip() == APP_VERSION:
+                        return   # já tentou nesta versão; não insiste
+            except OSError:
+                pass
+            asset_url = None
+            for asset in data.get("assets", []):
+                if asset.get("name", "").lower().endswith(".zip"):
+                    asset_url = asset["browser_download_url"]
+                    break
+            if not asset_url:
+                return
+            with open(marca, "w", encoding="utf-8") as f:
+                f.write(APP_VERSION)
+            self.after(0, lambda: self._baixar_e_atualizar(
+                asset_url, APP_VERSION, automatico=True))
+        except Exception:
+            pass
 
-        Robusto: acha a pasta nova pelo executavel dentro do zip (independe do
-        nome da pasta do usuario) e sobrescreve tudo com robocopy, com
-        retentativa enquanto os arquivos estiverem travados pelo app fechando.
-        Substituir a _internal inteira evita a mistura onefile/onedir que
-        causava o erro _PYI_APPLICATION_HOME_DIR."""
+    def _baixar_e_atualizar(self, asset_url: str, versao: str = "",
+                            automatico: bool = False):
+        """Baixa o .zip da release (formato pasta/onedir) e substitui a PASTA do
+        app (executável + _internal), depois reinicia.
+
+        v2.9.38: o .bat antigo usava  for /r ... in (CalculadoraBCB.exe) , que no
+        Windows NÃO confere se o arquivo existe — acabava apontando para uma
+        subpasta qualquer da _internal e o executável nunca era trocado (loop de
+        "atualizar"). Agora a extração e a localização da pasta nova são feitas
+        aqui em Python, e um script PowerShell espera o app fechar, copia com
+        retentativa, CONFERE (hash) se o executável foi trocado, registra tudo
+        em _update_log.txt e só então reinicia. Se não conseguir, grava
+        _update_falhou.txt e o app oferece a atualização manual (sem loop)."""
         import sys
 
         win = tk.Toplevel(self)
-        win.title("Baixando atualizacao…")
+        win.title("Concluindo atualização…" if automatico
+                  else "Baixando atualização…")
         win.resizable(False, False)
         win.grab_set()
         win.configure(bg=COLOR_BG)
-        win.geometry("380x130")
+        win.geometry("400x130")
         win.transient(self)
 
-        tk.Label(win, text="Baixando nova versao, aguarde…",
+        tk.Label(win, text=("Concluindo a atualização (só desta vez), aguarde…"
+                            if automatico else "Baixando nova versão, aguarde…"),
                  font=("Segoe UI", 10), bg=COLOR_BG, fg=COLOR_TEXT).pack(
                      pady=(18, 6))
-        bar = ttk.Progressbar(win, mode="indeterminate", length=340)
+        bar = ttk.Progressbar(win, mode="indeterminate", length=360)
         bar.pack(pady=4)
         bar.start(10)
         status_lbl = tk.Label(win, text="Conectando…",
@@ -4008,26 +4223,36 @@ class CalculadoraApp(tk.Tk):
 
         def _worker():
             try:
-                # Auto-update so na versao compilada (.exe)
+                # Auto-update só na versão compilada (.exe)
                 if not getattr(sys, "frozen", False):
                     self.after(0, lambda: (
                         bar.stop(), win.destroy(),
                         messagebox.showinfo(
                             "Desenvolvimento",
-                            "Auto-update disponivel apenas na versao compilada.",
+                            "Auto-update disponível apenas na versão compilada.",
                             parent=self)
                     ))
                     return
 
-                current_exe = sys.executable           # .exe em uso (qualquer pasta/nome)
+                import shutil
+                import zipfile
+                current_exe = os.path.abspath(sys.executable)
                 exe_dir     = os.path.dirname(current_exe)
                 zip_path    = os.path.join(exe_dir, "_update.zip")
                 temp_dir    = os.path.join(exe_dir, "_update_temp")
-                bat_path    = os.path.join(exe_dir, "_updater.bat")
+                script_path = os.path.join(exe_dir, "_updater.ps1")
+
+                # Limpa restos de tentativas anteriores (inclusive do .bat antigo)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                for velho in (zip_path, script_path,
+                              os.path.join(exe_dir, "_updater.bat")):
+                    try:
+                        os.remove(velho)
+                    except OSError:
+                        pass
 
                 # Download do ZIP
-                self.after(0, lambda: status_lbl.configure(
-                    text="Baixando arquivo…"))
+                self.after(0, lambda: status_lbl.configure(text="Baixando arquivo…"))
                 req = urllib.request.Request(
                     asset_url,
                     headers={"User-Agent": f"calculadora-bcb/{APP_VERSION}"})
@@ -4046,60 +4271,59 @@ class CalculadoraApp(tk.Tk):
                             self.after(0, lambda p=pct: status_lbl.configure(
                                 text=f"Baixando… {p}%"))
 
-                # Bat: espera o app fechar, extrai o zip, localiza a PASTA nova
-                # (a que contem CalculadoraBCB.exe) e copia TODO o conteudo dela
-                # (executavel + _internal) por cima da pasta do app, com
-                # retentativa; depois reinicia. Independe do nome da pasta do
-                # usuario e sobrescreve a _internal inteira (evita a mistura
-                # onefile/onedir que causava o erro _PYI_APPLICATION_HOME_DIR).
-                ps_cmd = (
-                    f"Expand-Archive -LiteralPath '{zip_path}' "
-                    f"-DestinationPath '{temp_dir}' -Force"
-                )
-                bat_content = (
-                    "@echo off\r\n"
-                    "chcp 65001 >nul\r\n"
-                    "timeout /t 2 /nobreak >nul\r\n"
-                    f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{ps_cmd}"\r\n'
-                    'set "SRC="\r\n'
-                    f'for /r "{temp_dir}" %%F in (CalculadoraBCB.exe) do set "SRC=%%~dpF"\r\n'
-                    f'if not defined SRC for /r "{temp_dir}" %%F in (*.exe) do set "SRC=%%~dpF"\r\n'
-                    'if not defined SRC goto limpa\r\n'
-                    'set /a TRIES=0\r\n'
-                    ':copia\r\n'
-                    f'robocopy "%SRC%." "{exe_dir}" /E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul\r\n'
-                    'if %ERRORLEVEL% LSS 8 goto limpa\r\n'
-                    'set /a TRIES+=1\r\n'
-                    'if %TRIES% GEQ 30 goto limpa\r\n'
-                    'timeout /t 1 /nobreak >nul\r\n'
-                    'goto copia\r\n'
-                    ':limpa\r\n'
-                    f'rmdir /S /Q "{temp_dir}" 2>nul\r\n'
-                    f'del "{zip_path}" 2>nul\r\n'
-                    f'start "" "{current_exe}"\r\n'
-                    'del "%~f0"\r\n'
-                )
-                with open(bat_path, "w", encoding="utf-8") as f:
-                    f.write(bat_content)
+                # Extração (aqui em Python) e localização da pasta nova
+                self.after(0, lambda: status_lbl.configure(text="Extraindo arquivos…"))
+                with zipfile.ZipFile(zip_path) as zf:
+                    zf.extractall(temp_dir)
+                src_dir, exe_nome = _localizar_pasta_app(temp_dir)
+                if not src_dir:
+                    raise RuntimeError(
+                        "O pacote baixado não contém a pasta do aplicativo "
+                        "(CalculadoraBCB.exe + _internal).")
+
+                script = _montar_script_atualizacao(
+                    os.getpid(), src_dir, os.path.join(src_dir, exe_nome),
+                    exe_dir, current_exe, temp_dir, zip_path, versao or "?",
+                    script_path)
+                with open(script_path, "w", encoding="utf-8-sig", newline="") as f:
+                    f.write(script)
 
                 self.after(0, lambda: self._finalizar_atualizacao(
-                    bat_path, win))
+                    script_path, win, automatico))
+            except PermissionError as err:
+                msg = ("Sem permissão para gravar na pasta do aplicativo:\n"
+                       f"{err}\n\nDica: deixe a pasta do aplicativo fora de "
+                       "'Arquivos de Programas' (ex.: C:\\CalculadoraBCB) "
+                       "ou atualize manualmente.")
+                self.after(0, lambda m=msg: (
+                    bar.stop(), win.destroy(),
+                    None if automatico else messagebox.showerror(
+                        "Erro ao atualizar", m, parent=self)))
             except Exception as err:
                 self.after(0, lambda e=err: (
-                    bar.stop(),
-                    win.destroy(),
-                    messagebox.showerror(
+                    bar.stop(), win.destroy(),
+                    None if automatico else messagebox.showerror(
                         "Erro ao atualizar",
-                        f"Nao foi possivel baixar a atualizacao:\n{e}",
-                        parent=self)
-                ))
+                        f"Não foi possível concluir a atualização:\n{e}",
+                        parent=self)))
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _finalizar_atualizacao(self, bat_path: str, win: tk.Toplevel):
-        """Confirma reinício e executa o bat de substituição."""
-        win.destroy()
-        if not messagebox.askyesno(
+    def _finalizar_atualizacao(self, script_path: str, win: tk.Toplevel,
+                               automatico: bool = False):
+        """Confirma reinício e executa o script de substituição."""
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        if automatico:
+            messagebox.showinfo(
+                "Concluindo atualização",
+                "Falta só um passo para concluir a atualização.\n\n"
+                "O aplicativo vai fechar e abrir de novo sozinho em alguns "
+                "segundos.",
+                parent=self)
+        elif not messagebox.askyesno(
                 "Atualização pronta",
                 "O arquivo foi baixado com sucesso!\n\n"
                 "O aplicativo será fechado e reiniciado automaticamente "
@@ -4107,11 +4331,62 @@ class CalculadoraApp(tk.Tk):
                 parent=self):
             return
         import subprocess
-        subprocess.Popen(
-            ["cmd.exe", "/c", bat_path],
-            creationflags=subprocess.CREATE_NO_WINDOW
-            if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-        )
+        # Ambiente limpo: o app novo não deve herdar variáveis internas do
+        # PyInstaller deste processo (evita confusão entre instâncias).
+        env = {k: v for k, v in os.environ.items()
+               if not (k.upper().startswith("_PYI") or k.upper().startswith("_MEI")
+                       or k.upper() in ("TCL_LIBRARY", "TK_LIBRARY"))}
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        flags = 0
+        for nome in ("CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP"):
+            flags |= getattr(subprocess, nome, 0)
+
+        def _iniciar(args):
+            """True se o PowerShell ficou rodando (o script espera este app
+            fechar); False se terminou na hora (ex.: política bloqueou)."""
+            try:
+                proc = subprocess.Popen(args, env=env, creationflags=flags,
+                                        close_fds=True,
+                                        cwd=os.path.dirname(script_path))
+            except Exception:
+                return False
+            try:
+                proc.wait(timeout=4)
+                return False
+            except subprocess.TimeoutExpired:
+                return True
+
+        base = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-WindowStyle", "Hidden"]
+        cmd_alt = ("$c = [IO.File]::ReadAllText(" + _ps_str(script_path) +
+                   ", [Text.Encoding]::UTF8); Invoke-Expression $c")
+        try:
+            self.configure(cursor="watch")
+            self.update_idletasks()
+        except Exception:
+            pass
+        iniciou = (_iniciar(base + ["-File", script_path])
+                   or _iniciar(base + ["-Command", cmd_alt]))
+        if not iniciou:
+            try:
+                self.configure(cursor="")
+                exe_dir = os.path.dirname(script_path)
+                src = os.path.join(exe_dir, "_update_temp")
+                achado, _n = _localizar_pasta_app(src)
+                with open(os.path.join(exe_dir, "_update_falhou.txt"), "w",
+                          encoding="utf-8") as f:
+                    f.write(f"?|{achado or ''}")
+            except Exception:
+                pass
+            messagebox.showerror(
+                "Atualização bloqueada",
+                "O Windows deste computador não permitiu iniciar o atualizador "
+                "automático (política de segurança).\n\n"
+                "O aplicativo continua aberto. Na próxima vez que aparecer o "
+                "aviso de atualização, use o botão 'Atualizar manualmente' — "
+                "a versão nova já está baixada.",
+                parent=self)
+            return
         self.destroy()
 
     # ---------- Tutorial de boas-vindas -------------------------------------- #

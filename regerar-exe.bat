@@ -13,6 +13,9 @@ if not exist calculadora_bcb.py (
 
 echo --- Versao ---
 findstr /c:"APP_VERSION  =" calculadora_bcb.py
+set "VER="
+for /f "tokens=3" %%a in ('findstr /c:"APP_VERSION  =" calculadora_bcb.py') do set "VER=%%a"
+set VER=%VER:"=%
 echo.
 
 echo --- Limpando caches e builds antigos ---
@@ -27,8 +30,11 @@ python -m pip install pyinstaller openpyxl reportlab --upgrade
 echo.
 
 echo --- Compilando (formato pasta) - 3 a 5 min ---
+REM etiqueta de versao gravada na _internal (usada para concluir atualizacoes)
+(echo %VER%)> build_version.txt
 python -m PyInstaller --onedir --windowed --name CalculadoraBCB --noconfirm ^
   --collect-all openpyxl --collect-all reportlab ^
+  --add-data "build_version.txt;." ^
   calculadora_bcb.py
 if errorlevel 1 (
     echo ERRO na compilacao!
