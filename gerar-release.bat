@@ -14,7 +14,10 @@ if not exist calculadora_bcb.py (
 )
 
 echo --- Versao ---
-findstr /c:"APP_VERSION  =" calculadora_bcb.py
+set "VER="
+for /f "tokens=3" %%a in ('findstr /c:"APP_VERSION  =" calculadora_bcb.py') do set "VER=%%a"
+set VER=%VER:"=%
+echo  APP_VERSION = %VER%
 echo.
 
 echo --- Limpando builds antigos ---
@@ -52,7 +55,7 @@ echo    Pasta do app:               dist\CalculadoraBCB\  (exe + _internal)
 echo    ZIP p/ anexar na release:   dist\CalculadoraBCB.zip
 echo.
 echo  PROXIMOS PASSOS:
-echo   1) No GitHub, crie a release com a tag  v2.9.32
+echo   1) No GitHub, crie a release com a tag  v%VER%
 echo   2) Anexe o arquivo  dist\CalculadoraBCB.zip  na release
 echo   3) Para novos usuarios, distribua a PASTA dist\CalculadoraBCB
 echo      (a pasta inteira, nao apenas o .exe)

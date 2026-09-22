@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.35"
+APP_VERSION  = "2.9.36"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -747,6 +747,90 @@ def calcular_demonstrativo(config, competencias, progress_cb=None):
         "indice_nome": (INDICES[indice_key]["name"] if indice_key in INDICES
                        else indice_key),
     }
+
+
+def calcular_patronais_esp_ext(config, competencias, progress_cb=None):
+    """Calcula demonstrativo das contribuições PATRONAIS Especial (6%) e
+    Extraordinária (alíquota variável por ano/período).
+
+    Reaproveita integralmente calcular_demonstrativo(): a coluna 'Segurado'
+    representa a patronal ESPECIAL e a coluna 'Patronal' representa a
+    EXTRAORDINÁRIA. Nada da função do Demonstrativo é alterado.
+
+    config (além dos aceitos por calcular_demonstrativo):
+      - aliquota_especial: Decimal (ex: 0.06) — alíquota da Especial (constante)
+      - aliquota_extraordinaria: Decimal — alíquota fixa da Extraordinária
+            (usada quando não há período cobrindo a competência)
+      - incluir_especial: bool (default True)
+      - incluir_extraordinaria: bool (default True)
+      - usar_ultimo_dia_venc: bool — vencimento no ÚLTIMO dia do mês seguinte
+      - dia_vencimento: int (1..31) — usado quando usar_ultimo_dia_venc é False
+      - periodos_aliquota: lista de períodos da EXTRAORDINÁRIA no formato
+            {data_ini, data_fim, aliq_pat} (aliq_seg é opcional; se ausente,
+            usa a alíquota da Especial). Mantém compat com {aliq_seg, aliq_pat}.
+    """
+    incluir_esp = bool(config.get("incluir_especial", True))
+    incluir_ext = bool(config.get("incluir_extraordinaria", True))
+
+    aliq_esp = Decimal(str(config.get("aliquota_especial", "0.06")))
+    aliq_ext_fixa = Decimal(str(config.get("aliquota_extraordinaria", "0")))
+    if not incluir_esp:
+        aliq_esp = Decimal("0")
+    if not incluir_ext:
+        aliq_ext_fixa = Decimal("0")
+
+    dia_venc = int(config.get("dia_vencimento", 5))
+    usar_ultimo = bool(config.get("usar_ultimo_dia_venc", False))
+
+    # Mapear períodos: aliq_seg = Especial (constante), aliq_pat = Extraordinária
+    periodos = []
+    for pr in (config.get("periodos_aliquota") or []):
+        seg_val = pr.get("aliq_seg", aliq_esp)
+        seg_val = Decimal(str(seg_val)) if incluir_esp else Decimal("0")
+        pat_val = Decimal(str(pr["aliq_pat"])) if incluir_ext else Decimal("0")
+        periodos.append({
+            "data_ini": pr["data_ini"],
+            "data_fim": pr.get("data_fim"),
+            "aliq_seg": seg_val,
+            "aliq_pat": pat_val,
+        })
+
+    # Vencimento por competência (dia N ou último dia do mês SEGUINTE), passado
+    # como vencimento_custom — calcular_demonstrativo já respeita esse campo.
+    comps2 = []
+    for c in competencias:
+        mes, ano = c["mes"], c["ano"]
+        if mes == 12:
+            mes_venc, ano_venc = 1, ano + 1
+        else:
+            mes_venc, ano_venc = mes + 1, ano
+        ult_dia = monthrange(ano_venc, mes_venc)[1]
+        if usar_ultimo:
+            v = date(ano_venc, mes_venc, ult_dia)
+        else:
+            v = date(ano_venc, mes_venc, min(max(dia_venc, 1), ult_dia))
+        c2 = dict(c)
+        c2["vencimento_custom"] = v
+        comps2.append(c2)
+
+    demo_cfg = dict(config)
+    demo_cfg["aliquota_seg"] = aliq_esp
+    demo_cfg["aliquota_pat"] = aliq_ext_fixa
+    demo_cfg["periodos_aliquota"] = periodos
+    demo_cfg["dia_vencimento"] = dia_venc
+    demo_cfg["venc_descricao"] = ("último dia do mês seguinte" if usar_ultimo
+                                  else f"dia {dia_venc} do mês seguinte")
+    # Rótulos para os exportadores (defaults preservam o Demonstrativo original)
+    demo_cfg["label_seg_abrev"] = "Esp."
+    demo_cfg["label_pat_abrev"] = "Extr."
+    demo_cfg["label_seg_full"] = "Especial"
+    demo_cfg["label_pat_full"] = "Extraordinária"
+    demo_cfg["titulo_relatorio"] = ("Demonstrativo das Contribuições Patronais "
+                                    "Especial e Extraordinária")
+    demo_cfg["incluir_especial"] = incluir_esp
+    demo_cfg["incluir_extraordinaria"] = incluir_ext
+
+    return calcular_demonstrativo(demo_cfg, comps2, progress_cb=progress_cb)
 
 
 # ===================== Cobrança Amigável ===================== #
@@ -1552,20 +1636,25 @@ def exportar_csv_demo(filepath, resultado):
     totais = resultado["totais"]
     config = resultado["config"]
     eh_selic = config["indice_key"] == "SELIC"
+    _lsa = config.get("label_seg_abrev", "Seg.")
+    _lpa = config.get("label_pat_abrev", "Pat.")
+    _lsf = config.get("label_seg_full", "Segurado")
+    _lpf = config.get("label_pat_full", "Patronal")
+    _rtit = config.get("titulo_relatorio")
 
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow([f"Demonstrativo - Correção por {resultado['indice_nome']}"])
+        w.writerow([(_rtit + f" — Correção por {resultado['indice_nome']}") if _rtit else f"Demonstrativo - Correção por {resultado['indice_nome']}"])
         w.writerow([f"Data de Atualização: {config['data_atualizacao'].strftime('%d/%m/%Y')}"])
-        w.writerow([f"Alíquota Segurado: {config['aliquota_seg']*100:.0f}% | Patronal: {config['aliquota_pat']*100:.0f}%"])
+        w.writerow([f"Alíquota {_lsf}: {config['aliquota_seg']*100:.0f}% | {_lpf}: {config['aliquota_pat']*100:.0f}%"])
         w.writerow([])
 
         if eh_selic:
             w.writerow([
                 "Competência", "Descrição", "Base de Cálculo", "Vencimento",
                 "Fator Selic",
-                "Devido Seg.", "Atualizado Seg.", "1% Seg.", "Multa Seg.", "Total Seg.",
-                "Devido Pat.", "Atualizado Pat.", "1% Pat.", "Multa Pat.", "Total Pat.",
+                f"Devido {_lsa}", f"Atualizado {_lsa}", f"1% {_lsa}", f"Multa {_lsa}", f"Total {_lsa}",
+                f"Devido {_lpa}", f"Atualizado {_lpa}", f"1% {_lpa}", f"Multa {_lpa}", f"Total {_lpa}",
                 "Total Geral", "Situação",
             ])
             for l in linhas:
@@ -1585,8 +1674,8 @@ def exportar_csv_demo(filepath, resultado):
             w.writerow([
                 "Competência", "Descrição", "Base de Cálculo", "Vencimento",
                 "Fator Índice", "Meses",
-                "Devido Seg.", "Atualizado Seg.", "Juros Seg.", "Total Seg.",
-                "Devido Pat.", "Atualizado Pat.", "Juros Pat.", "Total Pat.",
+                f"Devido {_lsa}", f"Atualizado {_lsa}", f"Juros {_lsa}", f"Total {_lsa}",
+                f"Devido {_lpa}", f"Atualizado {_lpa}", f"Juros {_lpa}", f"Total {_lpa}",
                 "Total Geral", "Situação",
             ])
             for l in linhas:
@@ -2233,6 +2322,11 @@ def exportar_xlsx_demo(filepath, resultado, dados_processo=None):
     linhas = resultado["linhas"]
     totais = resultado["totais"]
     eh_selic = config["indice_key"] == "SELIC"
+    _lsa = config.get("label_seg_abrev", "Seg.")
+    _lpa = config.get("label_pat_abrev", "Pat.")
+    _lsf = config.get("label_seg_full", "Segurado")
+    _lpf = config.get("label_pat_full", "Patronal")
+    _rtit = config.get("titulo_relatorio")
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -2241,8 +2335,8 @@ def exportar_xlsx_demo(filepath, resultado, dados_processo=None):
     if eh_selic:
         headers = ["Competência", "Descrição", "Base de Cálculo", "Vencimento",
                    "Fator Selic",
-                   "Devido Seg.", "Atualizado Seg.", "1% Seg.", "Multa Seg.", "Total Seg.",
-                   "Devido Pat.", "Atualizado Pat.", "1% Pat.", "Multa Pat.", "Total Pat.",
+                   f"Devido {_lsa}", f"Atualizado {_lsa}", f"1% {_lsa}", f"Multa {_lsa}", f"Total {_lsa}",
+                   f"Devido {_lpa}", f"Atualizado {_lpa}", f"1% {_lpa}", f"Multa {_lpa}", f"Total {_lpa}",
                    "Total Geral", "Situação"]
         # mapeamento de colunas
         col_total_seg = 10
@@ -2252,8 +2346,8 @@ def exportar_xlsx_demo(filepath, resultado, dados_processo=None):
     else:
         headers = ["Competência", "Descrição", "Base de Cálculo", "Vencimento",
                    "Fator Índice", "Meses Atraso",
-                   "Devido Seg.", "Atualizado Seg.", "Juros Seg.", "Total Seg.",
-                   "Devido Pat.", "Atualizado Pat.", "Juros Pat.", "Total Pat.",
+                   f"Devido {_lsa}", f"Atualizado {_lsa}", f"Juros {_lsa}", f"Total {_lsa}",
+                   f"Devido {_lpa}", f"Atualizado {_lpa}", f"Juros {_lpa}", f"Total {_lpa}",
                    "Total Geral", "Situação"]
         col_total_seg = 10
         col_total_pat = 14
@@ -2263,11 +2357,11 @@ def exportar_xlsx_demo(filepath, resultado, dados_processo=None):
     num_cols = len(headers)
 
     # Cabeçalho
-    aliquotas_pct = (f"Segurado {float(config['aliquota_seg'])*100:.0f}%  ·  "
-                    f"Patronal {float(config['aliquota_pat'])*100:.0f}%")
+    aliquotas_pct = (f"{_lsf} {float(config['aliquota_seg'])*100:.0f}%  ·  "
+                    f"{_lpf} {float(config['aliquota_pat'])*100:.0f}%")
     info = (f"Atualização em {config['data_atualizacao'].strftime('%d/%m/%Y')}  ·  "
             f"Alíquotas: {aliquotas_pct}  ·  "
-            f"Vencimento: dia {config['dia_vencimento']} do mês seguinte"
+            f"Vencimento: {config.get('venc_descricao') or ('dia ' + str(config.get('dia_vencimento', 5)) + ' do mês seguinte')}"
             + (f"  ·  Limite multa: {float(config['multa_limite_pct'])*100:.0f}%"
                if eh_selic else "")
             + f"  ·  Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}")
@@ -2278,7 +2372,7 @@ def exportar_xlsx_demo(filepath, resultado, dados_processo=None):
     # 2) Título do documento (abaixo do bloco IPREM)
     title_end = _xl_title_block(
         ws, num_cols,
-        title="Demonstrativo das Contribuições Previdenciárias a Recolher",
+        title=(_rtit or "Demonstrativo das Contribuições Previdenciárias a Recolher"),
         subtitle=f"Correção monetária por {resultado['indice_nome']}",
         info=info,
         start_row=proc_end if dados_processo else 1,
@@ -2904,24 +2998,29 @@ def exportar_pdf_demo(filepath, resultado, dados_processo=None):
     linhas = resultado["linhas"]
     totais = resultado["totais"]
     eh_selic = config["indice_key"] == "SELIC"
+    _lsa = config.get("label_seg_abrev", "Seg.")
+    _lpa = config.get("label_pat_abrev", "Pat.")
+    _lsf = config.get("label_seg_full", "Segurado")
+    _lpf = config.get("label_pat_full", "Patronal")
+    _rtit = config.get("titulo_relatorio")
 
     page_size = landscape(A4)
     doc = SimpleDocTemplate(
         filepath, pagesize=page_size,
         leftMargin=0.8 * cm, rightMargin=0.8 * cm,
         topMargin=1.0 * cm, bottomMargin=1.4 * cm,
-        title="Demonstrativo Previdenciário",
+        title=(_rtit or "Demonstrativo Previdenciário"),
         author="Calculadora do Cidadão (não-oficial)",
     )
     page_w = page_size[0] - 1.6 * cm
 
     styles = _pdf_styles()
 
-    aliquotas_pct = (f"Segurado {float(config['aliquota_seg'])*100:.0f}% · "
-                    f"Patronal {float(config['aliquota_pat'])*100:.0f}%")
+    aliquotas_pct = (f"{_lsf} {float(config['aliquota_seg'])*100:.0f}% · "
+                    f"{_lpf} {float(config['aliquota_pat'])*100:.0f}%")
     info = (f"Atualização: {config['data_atualizacao'].strftime('%d/%m/%Y')} · "
             f"Alíquotas: {aliquotas_pct} · "
-            f"Vencimento: dia {config['dia_vencimento']} do mês seguinte"
+            f"Vencimento: {config.get('venc_descricao') or ('dia ' + str(config.get('dia_vencimento', 5)) + ' do mês seguinte')}"
             + (f" · Limite multa: {float(config['multa_limite_pct'])*100:.0f}%"
                if eh_selic else "")
             + f" · Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}")
@@ -2929,7 +3028,7 @@ def exportar_pdf_demo(filepath, resultado, dados_processo=None):
     story = []
     story.extend(_pdf_header_block(
         num_cols_visual_width=17,
-        title="Demonstrativo de Contribuições Previdenciárias a Recolher",
+        title=(_rtit or "Demonstrativo de Contribuições Previdenciárias a Recolher"),
         subtitle=f"Correção monetária por {resultado['indice_nome']}",
         info=info,
         page_w=page_w,
@@ -2941,8 +3040,8 @@ def exportar_pdf_demo(filepath, resultado, dados_processo=None):
     if eh_selic:
         headers = ["Compet.", "Descrição", "Base (R$)", "Venc.",
                   "Fator Selic",
-                  "Dev. Seg.", "Atu. Seg.", "1% Seg.", "Multa Seg.", "Total Seg.",
-                  "Dev. Pat.", "Atu. Pat.", "1% Pat.", "Multa Pat.", "Total Pat.",
+                  f"Dev. {_lsa}", f"Atu. {_lsa}", f"1% {_lsa}", f"Multa {_lsa}", f"Total {_lsa}",
+                  f"Dev. {_lpa}", f"Atu. {_lpa}", f"1% {_lpa}", f"Multa {_lpa}", f"Total {_lpa}",
                   "TOTAL (R$)", "Situação"]
         col_total_seg = 9
         col_total_pat = 14
@@ -2951,8 +3050,8 @@ def exportar_pdf_demo(filepath, resultado, dados_processo=None):
     else:
         headers = ["Compet.", "Descrição", "Base (R$)", "Venc.",
                   "Fator Índice", "Meses",
-                  "Dev. Seg.", "Atu. Seg.", "Juros Seg.", "Total Seg.",
-                  "Dev. Pat.", "Atu. Pat.", "Juros Pat.", "Total Pat.",
+                  f"Dev. {_lsa}", f"Atu. {_lsa}", f"Juros {_lsa}", f"Total {_lsa}",
+                  f"Dev. {_lpa}", f"Atu. {_lpa}", f"Juros {_lpa}", f"Total {_lpa}",
                   "TOTAL (R$)", "Situação"]
         col_total_seg = 9
         col_total_pat = 13
@@ -3128,10 +3227,10 @@ def exportar_pdf_demo(filepath, resultado, dados_processo=None):
     story.append(Spacer(1, 0.5 * cm))
     resumo_data = [[
         Paragraph(
-            f"<b>Total Segurado:</b> R$ {fmt_brl(totais['total_seg'])}",
+            f"<b>Total {_lsf}:</b> R$ {fmt_brl(totais['total_seg'])}",
             styles["small_center"]),
         Paragraph(
-            f"<b>Total Patronal:</b> R$ {fmt_brl(totais['total_pat'])}",
+            f"<b>Total {_lpf}:</b> R$ {fmt_brl(totais['total_pat'])}",
             styles["small_center"]),
         Paragraph(
             f"<b>TOTAL GERAL: R$ {fmt_brl(totais['total_geral'])}</b>",
@@ -4615,6 +4714,7 @@ class CalculadoraApp(tk.Tk):
         self._build_selic_tab()
         self._build_lote_tab()
         self._build_demo_tab()
+        self._build_pesp_tab()
         self._build_cobranca_tab()
         self._build_atraso_tab()
 
@@ -6441,6 +6541,730 @@ class CalculadoraApp(tk.Tk):
                          f"TOTAL GERAL: R$ {fmt_brl(t['total_geral'])}")
         self.lbl_demo_status.config(text=status_txt)
 
+
+    # ================================================================
+    # Tab: Patronais Especial e Extraordinária
+    # ================================================================
+    def _build_pesp_tab(self):
+        tab = ttk.Frame(self.notebook, style="BCB.TFrame", padding=10)
+        self.notebook.add(tab, text="Patronais Esp./Extraord.")
+
+        ttk.Label(
+            tab,
+            text=(" Contribuições PATRONAIS Especial (6%) e Extraordinária "
+                  "(alíquota variável por ano), com correção monetária, juros de "
+                  "mora e (Selic) multa. Vencimento pode ser o último dia do mês."),
+            style="Info.TLabel"
+        ).pack(fill="x", pady=(0, 6))
+
+        inp = tk.Frame(tab, bg=COLOR_PANEL)
+        inp.pack(fill="x", side="top")
+        res = tk.Frame(tab, bg=COLOR_PANEL)
+        res.pack(fill="both", expand=True, side="top", pady=(6, 0))
+
+        self._build_processo_section(inp, scope="pesp", collapsible=True, start_open=False)
+
+        # === Configurações ===
+        cfg_frame = tk.LabelFrame(inp, text=" Configurações ",
+                                 bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+                                 font=("Verdana", 8, "bold"), bd=1, relief="solid")
+        cfg_frame.pack(fill="x", pady=(0, 6))
+        cfg_inner = tk.Frame(cfg_frame, bg=COLOR_PANEL)
+        cfg_inner.pack(fill="x", padx=8, pady=8)
+
+        # linha 0: índice + data atualização
+        tk.Label(cfg_inner, text="Índice:", bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+                font=("Verdana", 9, "bold")).grid(row=0, column=0, sticky="e", padx=4)
+        self.cb_pesp_indice = ttk.Combobox(
+            cfg_inner, values=["IPCA", "IGP-M", "IGP-DI", "INPC",
+                              "IPCA-E", "IPC-BR", "IPC-SP", "SELIC"],
+            state="readonly", width=10)
+        self.cb_pesp_indice.set("IPCA")
+        self.cb_pesp_indice.grid(row=0, column=1, columnspan=2, sticky="w", padx=4)
+        self.cb_pesp_indice.bind("<<ComboboxSelected>>", self._pesp_toggle_selic_fields)
+
+        tk.Label(cfg_inner, text="Data de Atualização:", bg=COLOR_PANEL,
+                fg=COLOR_BCB_BLUE, font=("Verdana", 9, "bold")).grid(
+            row=0, column=3, sticky="e", padx=(20, 4))
+        self.e_pesp_dataatu = _entry_make(cfg_inner, width=14, placeholder="DD/MM/AAAA")
+        self.e_pesp_dataatu.grid(row=0, column=4, columnspan=2, sticky="w", padx=4)
+        _mask_full_date(self.e_pesp_dataatu)
+        _entry_set(self.e_pesp_dataatu, date.today().strftime("%d/%m/%Y"))
+
+        # linha 1: vencimento (último dia do mês OU dia N)
+        self.pesp_ultimo_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            cfg_inner, text="Vencimento no ÚLTIMO dia do mês seguinte",
+            variable=self.pesp_ultimo_var, bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+            activebackground=COLOR_PANEL, font=("Verdana", 9, "bold"),
+            selectcolor="white",
+            command=self._pesp_toggle_venc_state).grid(
+                row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 0))
+        tk.Label(cfg_inner, text="ou Dia:", bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+                font=("Verdana", 9, "bold")).grid(row=1, column=4, sticky="e",
+                padx=(20, 4), pady=(8, 0))
+        self.e_pesp_diavenc = _entry_make(cfg_inner, width=6, placeholder="1..31")
+        self.e_pesp_diavenc.grid(row=1, column=5, sticky="w", padx=4, pady=(8, 0))
+        _entry_set(self.e_pesp_diavenc, "5")
+        tk.Label(cfg_inner, text="(do mês seguinte, 1 a 31)", bg=COLOR_PANEL,
+                fg=COLOR_SUBTLE, font=("Verdana", 7)).grid(
+                row=1, column=6, columnspan=3, sticky="w", pady=(8, 0))
+
+        # linha 2: patronal ESPECIAL (incluir + alíquota)
+        self.pesp_incl_esp_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            cfg_inner, text="Incluir Patronal ESPECIAL", variable=self.pesp_incl_esp_var,
+            bg=COLOR_PANEL, fg=COLOR_BCB_BLUE, activebackground=COLOR_PANEL,
+            font=("Verdana", 9, "bold"), selectcolor="white",
+            command=self._pesp_toggle_esp_state).grid(
+                row=2, column=0, columnspan=3, sticky="w", padx=4, pady=(10, 0))
+        tk.Label(cfg_inner, text="Alíquota Especial:", bg=COLOR_PANEL,
+                fg=COLOR_BCB_BLUE, font=("Verdana", 9, "bold")).grid(
+            row=2, column=3, sticky="e", padx=(20, 4), pady=(10, 0))
+        self.e_pesp_aliqesp = _entry_make(cfg_inner, width=8, placeholder="6")
+        self.e_pesp_aliqesp.grid(row=2, column=4, sticky="w", padx=4, pady=(10, 0))
+        _entry_set(self.e_pesp_aliqesp, "6")
+        tk.Label(cfg_inner, text="%", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+                font=("Verdana", 8)).grid(row=2, column=5, sticky="w", pady=(10, 0))
+
+        # linha 3: patronal EXTRAORDINÁRIA (incluir + alíquota padrão + botão períodos)
+        self.pesp_incl_ext_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            cfg_inner, text="Incluir Patronal EXTRAORDINÁRIA", variable=self.pesp_incl_ext_var,
+            bg=COLOR_PANEL, fg=COLOR_BCB_BLUE, activebackground=COLOR_PANEL,
+            font=("Verdana", 9, "bold"), selectcolor="white",
+            command=self._pesp_toggle_ext_state).grid(
+                row=3, column=0, columnspan=3, sticky="w", padx=4, pady=(10, 0))
+        tk.Label(cfg_inner, text="Alíq. padrão:", bg=COLOR_PANEL,
+                fg=COLOR_BCB_BLUE, font=("Verdana", 9, "bold")).grid(
+            row=3, column=3, sticky="e", padx=(20, 4), pady=(10, 0))
+        self.e_pesp_aliqext = _entry_make(cfg_inner, width=8, placeholder="0")
+        self.e_pesp_aliqext.grid(row=3, column=4, sticky="w", padx=4, pady=(10, 0))
+        _entry_set(self.e_pesp_aliqext, "0")
+        tk.Label(cfg_inner, text="%", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+                font=("Verdana", 8)).grid(row=3, column=5, sticky="w", pady=(10, 0))
+        self.btn_pesp_periodos = ttk.Button(
+            cfg_inner, text="Alíquotas por ano…", style="BCBSmall.TButton",
+            command=self._pesp_abrir_periodos)
+        self.btn_pesp_periodos.grid(row=3, column=6, columnspan=2, sticky="w",
+                                    padx=(10, 0), pady=(10, 0))
+        self._pesp_periodos_status = tk.Label(
+            cfg_inner, text="", bg=COLOR_PANEL, fg=COLOR_SUBTLE, font=("Verdana", 7))
+        self._pesp_periodos_status.grid(row=4, column=6, columnspan=3, sticky="w")
+
+        # linha 5: juros mensais
+        tk.Label(cfg_inner, text="Juros Mensais:", bg=COLOR_PANEL,
+                fg=COLOR_BCB_BLUE, font=("Verdana", 9, "bold")).grid(
+            row=5, column=0, sticky="e", padx=4, pady=(8, 0))
+        self.e_pesp_juros_mes = _entry_make(cfg_inner, width=8, placeholder="1")
+        self.e_pesp_juros_mes.grid(row=5, column=1, sticky="w", padx=4, pady=(8, 0))
+        _entry_set(self.e_pesp_juros_mes, "1")
+        tk.Label(cfg_inner, text="% a.m.", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+                font=("Verdana", 8)).grid(row=5, column=2, sticky="w", pady=(8, 0))
+        tk.Label(cfg_inner,
+                text="(IPCA: × meses de atraso. Selic: 1% no mês do pagamento)",
+                bg=COLOR_PANEL, fg=COLOR_SUBTLE, font=("Verdana", 7)).grid(
+                row=5, column=3, columnspan=5, sticky="w", padx=(20, 4), pady=(8, 0))
+
+        # linha 6: multa Selic (diária + limite)
+        tk.Label(cfg_inner, text="Multa Diária:", bg=COLOR_PANEL,
+                fg=COLOR_BCB_BLUE, font=("Verdana", 9, "bold")).grid(
+            row=6, column=0, sticky="e", padx=4, pady=(8, 0))
+        self.e_pesp_multa_dia = _entry_make(cfg_inner, width=8, placeholder="0,33")
+        self.e_pesp_multa_dia.grid(row=6, column=1, sticky="w", padx=4, pady=(8, 0))
+        _entry_set(self.e_pesp_multa_dia, "0,33")
+        self.lbl_pesp_multadia_hint = tk.Label(
+            cfg_inner, text="% a.d.", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+            font=("Verdana", 8))
+        self.lbl_pesp_multadia_hint.grid(row=6, column=2, sticky="w", pady=(8, 0))
+        tk.Label(cfg_inner, text="Limite Multa:", bg=COLOR_PANEL,
+                fg=COLOR_BCB_BLUE, font=("Verdana", 9, "bold")).grid(
+            row=6, column=3, sticky="e", padx=(20, 4), pady=(8, 0))
+        self.e_pesp_multa = _entry_make(cfg_inner, width=8, placeholder="20")
+        self.e_pesp_multa.grid(row=6, column=4, sticky="w", padx=4, pady=(8, 0))
+        _entry_set(self.e_pesp_multa, "20")
+        self.lbl_pesp_multa_hint = tk.Label(
+            cfg_inner, text="% (só Selic)", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+            font=("Verdana", 7))
+        self.lbl_pesp_multa_hint.grid(row=6, column=5, columnspan=3, sticky="w", pady=(8, 0))
+
+        # linha 7: honorários
+        self.pesp_honor_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            cfg_inner, text="Aplicar honorários sobre o débito atualizado",
+            variable=self.pesp_honor_var, bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+            activebackground=COLOR_PANEL, font=("Verdana", 9, "bold"),
+            selectcolor="white",
+            command=self._pesp_toggle_honor_state).grid(
+                row=7, column=0, columnspan=3, sticky="w", padx=4, pady=(10, 0))
+        self.e_pesp_honor_pct = _entry_make(cfg_inner, width=8, placeholder="10")
+        self.e_pesp_honor_pct.grid(row=7, column=3, sticky="w", padx=(20, 4), pady=(10, 0))
+        _entry_set(self.e_pesp_honor_pct, "10")
+        self.e_pesp_honor_pct.configure(state="disabled")
+        tk.Label(cfg_inner, text="% sobre o total geral atualizado",
+                bg=COLOR_PANEL, fg=COLOR_SUBTLE, font=("Verdana", 7)).grid(
+                row=7, column=4, columnspan=4, sticky="w", pady=(10, 0))
+
+        # Popup de alíquotas da EXTRAORDINÁRIA por ano
+        self._pesp_periodos_win = tk.Toplevel(self)
+        self._pesp_periodos_win.title("Alíquotas da Extraordinária por ano")
+        self._pesp_periodos_win.configure(bg=COLOR_PANEL)
+        self._pesp_periodos_win.withdraw()
+        self._pesp_periodos_win.protocol("WM_DELETE_WINDOW", self._pesp_fechar_periodos)
+        pin = tk.Frame(self._pesp_periodos_win, bg=COLOR_PANEL)
+        pin.pack(fill="both", expand=True, padx=12, pady=12)
+        tk.Label(pin, text=("Informe a alíquota da EXTRAORDINÁRIA vigente por ano. "
+                            "Deixe 'Ano Fim' vazio para vigência aberta."),
+                bg=COLOR_PANEL, fg=COLOR_SUBTLE, font=("Verdana", 8),
+                wraplength=420, justify="left").pack(fill="x", pady=(0, 6))
+        ph = tk.Frame(pin, bg=COLOR_BCB_BLUE)
+        ph.pack(fill="x")
+        for _txt, _w in [("Ano Início", 12), ("Ano Fim (vazio=aberto)", 20),
+                          ("Alíq. Extraord. %", 16), ("", 4)]:
+            tk.Label(ph, text=_txt, bg=COLOR_BCB_BLUE, fg="white",
+                     font=("Verdana", 8, "bold"), width=_w, padx=4, pady=3).pack(
+                         side="left", padx=1)
+        self._pesp_periodos_rows_frame = tk.Frame(pin, bg=COLOR_PANEL)
+        self._pesp_periodos_rows_frame.pack(fill="x")
+        pbtns = tk.Frame(pin, bg=COLOR_PANEL)
+        pbtns.pack(fill="x", pady=(8, 0))
+        ttk.Button(pbtns, text="+ Adicionar ano", style="BCBSmall.TButton",
+                   command=self._pesp_add_periodo).pack(side="left", padx=4)
+        ttk.Button(pbtns, text="Fechar", style="BCB.TButton",
+                   command=self._pesp_fechar_periodos).pack(side="right", padx=4)
+        self.pesp_periodos_rows = []
+
+        # Botões topo
+        top_bar = tk.Frame(inp, bg=COLOR_PANEL)
+        top_bar.pack(fill="x", pady=(0, 4))
+        ttk.Button(top_bar, text="+ Competência", style="BCBSmall.TButton",
+                  command=self._pesp_add_row).pack(side="left", padx=(0, 4))
+        ttk.Button(top_bar, text="Importar CSV…", style="BCBSmall.TButton",
+                  command=lambda: self._pesp_import("csv")).pack(side="left", padx=2)
+        if HAS_XLSX:
+            ttk.Button(top_bar, text="Importar XLSX…", style="BCBSmall.TButton",
+                      command=lambda: self._pesp_import("xlsx")).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="Limpar tudo", style="BCBSmall.TButton",
+                  command=self._pesp_clear).pack(side="left", padx=(8, 2))
+        self.btn_pesp_calc = ttk.Button(top_bar, text="▶ Calcular",
+                                        style="BCB.TButton", command=self._pesp_calc)
+        self.btn_pesp_calc.pack(side="right", padx=2)
+
+        # Tabela competências
+        comp_frame = tk.LabelFrame(inp, text=" Competências ",
+                                  bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+                                  font=("Verdana", 8, "bold"), bd=1, relief="solid")
+        comp_frame.pack(fill="x", pady=(0, 4))
+        hdr = tk.Frame(comp_frame, bg=COLOR_BCB_BLUE)
+        hdr.pack(fill="x")
+        for txt, w in [("#", 30), ("Competência (MM/AAAA)", 180),
+                       ("Descrição", 240), ("Base de Cálculo (R$)", 180), ("", 60)]:
+            tk.Label(hdr, text=txt, bg=COLOR_BCB_BLUE, fg="white",
+                    font=("Verdana", 8, "bold"), width=max(w // 8, 4),
+                    padx=4, pady=4).pack(side="left", padx=1)
+        canvas_frame = tk.Frame(comp_frame, bg=COLOR_PANEL)
+        canvas_frame.pack(fill="x")
+        self.pesp_canvas = tk.Canvas(canvas_frame, bg=COLOR_PANEL,
+                                    height=118, highlightthickness=0)
+        self.pesp_canvas.pack(side="left", fill="x", expand=True)
+        vsb = ttk.Scrollbar(canvas_frame, orient="vertical",
+                           command=self.pesp_canvas.yview)
+        vsb.pack(side="right", fill="y")
+        self.pesp_canvas.configure(yscrollcommand=vsb.set)
+        self.pesp_rows_frame = tk.Frame(self.pesp_canvas, bg=COLOR_PANEL)
+        self.pesp_canvas.create_window((0, 0), window=self.pesp_rows_frame, anchor="nw")
+        self.pesp_rows_frame.bind(
+            "<Configure>",
+            lambda e: self.pesp_canvas.configure(scrollregion=self.pesp_canvas.bbox("all")))
+        def _on_mw(e):
+            self.pesp_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        self.pesp_canvas.bind("<MouseWheel>", _on_mw)
+        self.pesp_rows_frame.bind("<MouseWheel>", _on_mw)
+        self.pesp_rows = []
+        for _ in range(3):
+            self._pesp_add_row()
+
+        # Resultado
+        result_frame = tk.LabelFrame(res, text=" Resultado — Patronais Especial e Extraordinária ",
+                                    bg=COLOR_PANEL, fg=COLOR_BCB_BLUE,
+                                    font=("Verdana", 8, "bold"), bd=1, relief="solid")
+        result_frame.pack(fill="both", expand=True)
+        toolbar = tk.Frame(result_frame, bg=COLOR_PANEL)
+        toolbar.pack(fill="x", padx=4, pady=4)
+        self.lbl_pesp_status = tk.Label(toolbar, text="", bg=COLOR_PANEL,
+                                        fg=COLOR_SUBTLE, font=("Verdana", 8))
+        self.lbl_pesp_status.pack(side="left", padx=4)
+        ttk.Button(toolbar, text="Exportar CSV…", style="BCBSmall.TButton",
+                  command=lambda: self._pesp_export("csv")).pack(side="right", padx=2)
+        if HAS_XLSX:
+            ttk.Button(toolbar, text="Exportar XLSX…", style="BCBSmall.TButton",
+                      command=lambda: self._pesp_export("xlsx")).pack(side="right", padx=2)
+        if HAS_PDF:
+            ttk.Button(toolbar, text="Exportar PDF…", style="BCBSmall.TButton",
+                      command=lambda: self._pesp_export("pdf")).pack(side="right", padx=2)
+        tv_frame = tk.Frame(result_frame, bg=COLOR_PANEL)
+        tv_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self.pesp_tree_frame = tv_frame
+        self._pesp_build_tree(eh_selic=False)
+        self.pesp_resultado = None
+        self._pesp_toggle_venc_state()
+        self._pesp_atualizar_status_periodos()
+
+    def _pesp_build_tree(self, eh_selic):
+        for w in self.pesp_tree_frame.winfo_children():
+            w.destroy()
+        if eh_selic:
+            columns = ("comp", "desc", "base", "venc", "fator",
+                      "dev_seg", "atu_seg", "j_seg", "m_seg", "t_seg",
+                      "dev_pat", "atu_pat", "j_pat", "m_pat", "t_pat",
+                      "geral", "sit")
+            headings = {
+                "comp": "Competência", "desc": "Descr.", "base": "Base",
+                "venc": "Venc.", "fator": "Fator Selic",
+                "dev_seg": "Dev.Esp", "atu_seg": "Atu.Esp",
+                "j_seg": "1%Esp", "m_seg": "Multa Esp", "t_seg": "Total Esp",
+                "dev_pat": "Dev.Extr", "atu_pat": "Atu.Extr",
+                "j_pat": "1%Extr", "m_pat": "Multa Extr", "t_pat": "Total Extr",
+                "geral": "Total Geral", "sit": "Situação"}
+            widths = {"comp": 90, "desc": 100, "base": 80, "venc": 80,
+                     "fator": 80, "dev_seg": 70, "atu_seg": 75, "j_seg": 60,
+                     "m_seg": 65, "t_seg": 80, "dev_pat": 70, "atu_pat": 75,
+                     "j_pat": 60, "m_pat": 65, "t_pat": 80, "geral": 90, "sit": 80}
+        else:
+            columns = ("comp", "desc", "base", "venc", "fator", "meses",
+                      "dev_seg", "atu_seg", "j_seg", "t_seg",
+                      "dev_pat", "atu_pat", "j_pat", "t_pat", "geral", "sit")
+            headings = {
+                "comp": "Competência", "desc": "Descr.", "base": "Base",
+                "venc": "Venc.", "fator": "Fator Índice", "meses": "Meses",
+                "dev_seg": "Dev.Esp", "atu_seg": "Atu.Esp",
+                "j_seg": "Juros Esp", "t_seg": "Total Esp",
+                "dev_pat": "Dev.Extr", "atu_pat": "Atu.Extr",
+                "j_pat": "Juros Extr", "t_pat": "Total Extr",
+                "geral": "Total Geral", "sit": "Situação"}
+            widths = {"comp": 100, "desc": 110, "base": 80, "venc": 80,
+                     "fator": 85, "meses": 50, "dev_seg": 75, "atu_seg": 80,
+                     "j_seg": 70, "t_seg": 85, "dev_pat": 75, "atu_pat": 80,
+                     "j_pat": 70, "t_pat": 85, "geral": 95, "sit": 90}
+        self.pesp_tree = ttk.Treeview(self.pesp_tree_frame, columns=columns,
+                                      show="headings", style="BCB.Treeview", height=10)
+        for c in columns:
+            self.pesp_tree.heading(c, text=headings[c])
+            anchor = "w" if c in ("desc", "sit") else "e"
+            self.pesp_tree.column(c, width=widths[c], anchor=anchor)
+        vsb = ttk.Scrollbar(self.pesp_tree_frame, orient="vertical",
+                           command=self.pesp_tree.yview)
+        hsb = ttk.Scrollbar(self.pesp_tree_frame, orient="horizontal",
+                           command=self.pesp_tree.xview)
+        self.pesp_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        self.pesp_tree.pack(side="left", fill="both", expand=True)
+        self.pesp_tree.tag_configure("totais", background="#dde7f0",
+                                    foreground=COLOR_BCB_BLUE, font=("Verdana", 8, "bold"))
+        self.pesp_tree.tag_configure("alt", background=COLOR_TABLE_ALT)
+        self.pesp_tree.tag_configure("honor", background="#FFF9E0",
+                                    foreground="#9C7700", font=("Verdana", 8, "bold"))
+
+    def _pesp_toggle_venc_state(self):
+        st = "disabled" if self.pesp_ultimo_var.get() else "normal"
+        try:
+            self.e_pesp_diavenc.configure(state=st)
+        except Exception:
+            pass
+
+    def _pesp_toggle_esp_state(self):
+        st = "normal" if self.pesp_incl_esp_var.get() else "disabled"
+        self.e_pesp_aliqesp.configure(state=st)
+
+    def _pesp_toggle_ext_state(self):
+        st = "normal" if self.pesp_incl_ext_var.get() else "disabled"
+        self.e_pesp_aliqext.configure(state=st)
+        self.btn_pesp_periodos.configure(state=("normal" if self.pesp_incl_ext_var.get() else "disabled"))
+
+    def _pesp_toggle_honor_state(self):
+        self.e_pesp_honor_pct.configure(
+            state="normal" if self.pesp_honor_var.get() else "disabled")
+
+    def _pesp_toggle_selic_fields(self, event=None):
+        is_selic = self.cb_pesp_indice.get() == "SELIC"
+        self.lbl_pesp_multa_hint.config(
+            text="% (teto da multa Selic)" if is_selic else "% (não usado p/ índice mensal)")
+        self.lbl_pesp_multadia_hint.config(
+            text="% a.d.  (só Selic)" if is_selic else "% a.d.  (não usado p/ índice mensal)")
+
+    def _pesp_abrir_periodos(self):
+        if not self.pesp_periodos_rows:
+            self._pesp_add_periodo()
+        win = self._pesp_periodos_win
+        win.deiconify()
+        win.transient(self)
+        win.update_idletasks()
+        try:
+            rw, rh = win.winfo_reqwidth(), win.winfo_reqheight()
+            x = self.winfo_rootx() + (self.winfo_width() - rw) // 2
+            y = self.winfo_rooty() + 120
+            win.geometry(f"{rw}x{rh}+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+        win.lift()
+        win.focus_set()
+
+    def _pesp_fechar_periodos(self):
+        try:
+            self._pesp_periodos_win.withdraw()
+        except Exception:
+            pass
+        self._pesp_atualizar_status_periodos()
+
+    def _pesp_atualizar_status_periodos(self):
+        lbl = getattr(self, "_pesp_periodos_status", None)
+        if lbl is None:
+            return
+        n = len([r for r in getattr(self, "pesp_periodos_rows", [])])
+        if n:
+            lbl.config(text=f"✓ {n} ano(s) configurado(s)", fg="#1A7A1A")
+        else:
+            lbl.config(text="(usando alíquota padrão da Extraordinária)", fg=COLOR_SUBTLE)
+
+    def _pesp_add_periodo(self, ini="", fim="", aliq=""):
+        row_frame = tk.Frame(self._pesp_periodos_rows_frame, bg=COLOR_PANEL)
+        row_frame.pack(fill="x", pady=1)
+        e_ini = _entry_make(row_frame, width=12, placeholder="AAAA")
+        e_ini.pack(side="left", padx=(4, 2))
+        if ini:
+            _entry_set(e_ini, ini)
+        e_fim = _entry_make(row_frame, width=20, placeholder="AAAA")
+        e_fim.pack(side="left", padx=2)
+        if fim:
+            _entry_set(e_fim, fim)
+        e_aliq = _entry_make(row_frame, width=14, placeholder="0")
+        e_aliq.pack(side="left", padx=(8, 2))
+        if aliq:
+            _entry_set(e_aliq, aliq)
+        tk.Label(row_frame, text="%", bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+                 font=("Verdana", 8)).pack(side="left")
+        row_data = {"frame": row_frame, "ini": e_ini, "fim": e_fim, "aliq": e_aliq}
+        def remove_row(rd=row_data):
+            rd["frame"].destroy()
+            if rd in self.pesp_periodos_rows:
+                self.pesp_periodos_rows.remove(rd)
+            self._pesp_atualizar_status_periodos()
+        ttk.Button(row_frame, text="✕", style="BCBSmall.TButton",
+                   width=3, command=remove_row).pack(side="left", padx=6)
+        self.pesp_periodos_rows.append(row_data)
+        self._pesp_atualizar_status_periodos()
+
+    def _pesp_add_row(self, competencia="", descricao="", base=""):
+        rowf = tk.Frame(self.pesp_rows_frame, bg=COLOR_PANEL)
+        rowf.pack(fill="x", padx=2, pady=1)
+        num = len(self.pesp_rows) + 1
+        lbl = tk.Label(rowf, text=str(num), bg=COLOR_PANEL, fg=COLOR_SUBTLE,
+                      font=("Verdana", 8), width=4)
+        lbl.pack(side="left", padx=2)
+        e_comp = _entry_make(rowf, width=20, placeholder="MM/AAAA")
+        e_comp.pack(side="left", padx=1)
+        _mask_month_year(e_comp)
+        if competencia:
+            _entry_set(e_comp, competencia)
+        e_desc = _entry_make(rowf, width=28, placeholder="(opcional)")
+        e_desc.pack(side="left", padx=1)
+        if descricao:
+            _entry_set(e_desc, descricao)
+        e_base = _entry_make(rowf, width=20, placeholder="0,00")
+        e_base.pack(side="left", padx=1)
+        _bind_valor_format(e_base)
+        if base:
+            _entry_set(e_base, base)
+        row_data = {"frame": rowf, "lbl": lbl, "comp": e_comp, "desc": e_desc, "base": e_base}
+        btn_rm = tk.Button(rowf, text="✕", bg="#fdecea", fg=COLOR_ERROR,
+            font=("Verdana", 8, "bold"), bd=0, padx=6, pady=1,
+            command=lambda r=row_data: self._pesp_remove_row(r), cursor="hand2")
+        btn_rm.pack(side="left", padx=4)
+        row_data["btn_rm"] = btn_rm
+        self.pesp_rows.append(row_data)
+
+    def _pesp_remove_row(self, row_data):
+        row_data["frame"].destroy()
+        self.pesp_rows.remove(row_data)
+        for i, r in enumerate(self.pesp_rows, start=1):
+            r["lbl"].config(text=str(i))
+
+    def _pesp_clear(self):
+        if not messagebox.askyesno("Limpar", "Remover todas as competências?"):
+            return
+        for r in list(self.pesp_rows):
+            r["frame"].destroy()
+        self.pesp_rows.clear()
+        if hasattr(self, "pesp_tree"):
+            for item in self.pesp_tree.get_children():
+                self.pesp_tree.delete(item)
+        self.pesp_resultado = None
+        self.lbl_pesp_status.config(text="")
+
+    def _pesp_import(self, fmt):
+        if fmt == "csv":
+            path = filedialog.askopenfilename(
+                title="Importar Competências (CSV)",
+                filetypes=[("CSV", "*.csv"), ("Todos", "*.*")])
+        else:
+            path = filedialog.askopenfilename(
+                title="Importar Competências (XLSX)",
+                filetypes=[("Excel", "*.xlsx"), ("Todos", "*.*")])
+        if not path:
+            return
+        try:
+            linhas = importar_csv_demo(path) if fmt == "csv" else importar_xlsx_demo(path)
+        except Exception as e:
+            messagebox.showerror("Erro ao importar", str(e))
+            return
+        if not linhas:
+            messagebox.showwarning("Importação",
+                "Nenhuma competência encontrada. Verifique o cabeçalho: "
+                "Competência, Descrição, Base de Cálculo.")
+            return
+        for r in list(self.pesp_rows):
+            r["frame"].destroy()
+        self.pesp_rows.clear()
+        for linha in linhas:
+            self._pesp_add_row(competencia=linha.get("competencia", ""),
+                               descricao=linha.get("descricao", ""),
+                               base=linha.get("base", ""))
+        self.lbl_pesp_status.config(
+            text=f"✓ {len(linhas)} competência(s) importada(s) de {os.path.basename(path)}")
+
+    def _pesp_export(self, fmt):
+        if not self.pesp_resultado:
+            messagebox.showwarning("Exportar", "Calcule primeiro.")
+            return
+        if fmt == "csv":
+            path = filedialog.asksaveasfilename(
+                title="Salvar CSV", defaultextension=".csv",
+                filetypes=[("CSV", "*.csv")], initialfile="patronais_esp_ext.csv")
+        elif fmt == "xlsx":
+            path = filedialog.asksaveasfilename(
+                title="Salvar XLSX", defaultextension=".xlsx",
+                filetypes=[("Excel", "*.xlsx")], initialfile="patronais_esp_ext.xlsx")
+        elif fmt == "pdf":
+            path = filedialog.asksaveasfilename(
+                title="Salvar PDF", defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")], initialfile="patronais_esp_ext.pdf")
+        else:
+            return
+        if not path:
+            return
+        try:
+            dp = self._coletar_dados_processo("pesp")
+            if fmt == "csv":
+                exportar_csv_demo(path, self.pesp_resultado)
+            elif fmt == "xlsx":
+                exportar_xlsx_demo(path, self.pesp_resultado, dados_processo=dp)
+            elif fmt == "pdf":
+                exportar_pdf_demo(path, self.pesp_resultado, dados_processo=dp)
+            messagebox.showinfo("Exportar", f"Arquivo salvo em:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Erro ao exportar", str(e))
+
+    def _pesp_calc(self):
+        indice_key = self.cb_pesp_indice.get()
+        data_atu = parse_date_br(_entry_value(self.e_pesp_dataatu))
+        if not data_atu:
+            return messagebox.showerror("Validação",
+                "Data de Atualização inválida. Use DD/MM/AAAA.")
+        if data_atu.year < 1990 or data_atu.year > 2100:
+            return messagebox.showerror("Validação",
+                f"Data de Atualização com ano implausível ({data_atu.year}).")
+
+        incl_esp = bool(self.pesp_incl_esp_var.get())
+        incl_ext = bool(self.pesp_incl_ext_var.get())
+        if not incl_esp and not incl_ext:
+            return messagebox.showerror("Validação",
+                "Selecione ao menos uma patronal (Especial e/ou Extraordinária).")
+
+        def _pct(entry, nome, default=None):
+            v = _entry_value(entry).strip()
+            if not v:
+                if default is not None:
+                    return Decimal(default) / Decimal("100")
+                raise ValueError(f"O campo '{nome}' está vazio.")
+            try:
+                return Decimal(v.replace(",", ".")) / Decimal("100")
+            except Exception:
+                raise ValueError(f"O campo '{nome}' tem valor inválido: '{v}'.")
+
+        try:
+            aliq_esp = _pct(self.e_pesp_aliqesp, "Alíquota Especial", default="6") if incl_esp else Decimal("0")
+            aliq_ext = _pct(self.e_pesp_aliqext, "Alíq. padrão Extraordinária", default="0") if incl_ext else Decimal("0")
+            juros_mes = _pct(self.e_pesp_juros_mes, "Juros Mensais", default="1")
+            multa_dia = _pct(self.e_pesp_multa_dia, "Multa Diária", default="0.33")
+            multa_lim = _pct(self.e_pesp_multa, "Limite Multa", default="20")
+        except ValueError as e:
+            return messagebox.showerror("Validação", str(e))
+
+        usar_ultimo = bool(self.pesp_ultimo_var.get())
+        dia_venc = 5
+        if not usar_ultimo:
+            dia_str = _entry_value(self.e_pesp_diavenc).strip() or "5"
+            try:
+                dia_venc = int(dia_str)
+            except Exception:
+                return messagebox.showerror("Validação",
+                    f"Dia do Vencimento inválido: '{dia_str}'. Use inteiro de 1 a 31.")
+            if dia_venc < 1 or dia_venc > 31:
+                return messagebox.showerror("Validação",
+                    "Dia do Vencimento deve ser entre 1 e 31.")
+
+        aplicar_honor = bool(self.pesp_honor_var.get())
+        honor_pct = Decimal("0")
+        if aplicar_honor:
+            try:
+                honor_pct = _pct(self.e_pesp_honor_pct, "Honorários", default="10")
+            except ValueError as e:
+                return messagebox.showerror("Validação", str(e))
+
+        # Períodos (alíquotas da Extraordinária por ano)
+        periodos_cfg = []
+        if incl_ext:
+            for r in self.pesp_periodos_rows:
+                ai = _entry_value(r["ini"]).strip()
+                af = _entry_value(r["fim"]).strip()
+                aq = _entry_value(r["aliq"]).strip()
+                if not ai or not aq:
+                    continue
+                try:
+                    y1 = int(ai)
+                    y2 = int(af) if af else None
+                except Exception:
+                    return messagebox.showerror("Validação",
+                        f"Ano inválido na tabela de alíquotas: '{ai}'/'{af}'.")
+                try:
+                    alq = Decimal(aq.replace(",", ".")) / Decimal("100")
+                except Exception:
+                    return messagebox.showerror("Validação",
+                        f"Alíquota da Extraordinária inválida: '{aq}'.")
+                d_ini = date(y1, 1, 1)
+                d_fim = date(y2, 12, 31) if y2 else None
+                periodos_cfg.append({"data_ini": d_ini, "data_fim": d_fim, "aliq_pat": alq})
+
+        competencias = []
+        for i, r in enumerate(self.pesp_rows, start=1):
+            comp = _entry_value(r["comp"]).strip()
+            desc = _entry_value(r["desc"]).strip()
+            base_raw = _entry_value(r["base"]).strip()
+            if not any([comp, desc, base_raw]):
+                continue
+            my = parse_month_year(comp)
+            if not my:
+                return messagebox.showerror("Validação",
+                    f"Linha {i}: competência inválida ('{comp}'). Use MM/AAAA.")
+            try:
+                base = parse_valor_br(base_raw)
+                if base is None:
+                    raise ValueError()
+            except Exception:
+                return messagebox.showerror("Validação",
+                    f"Linha {i}: base de cálculo inválida ('{base_raw}').")
+            competencias.append({"mes": my[0], "ano": my[1],
+                                 "descricao": desc, "base_calculo": base})
+        if not competencias:
+            return messagebox.showwarning("Cálculo", "Adicione ao menos uma competência.")
+
+        config = {
+            "indice_key": indice_key,
+            "data_atualizacao": data_atu,
+            "aliquota_especial": aliq_esp,
+            "aliquota_extraordinaria": aliq_ext,
+            "incluir_especial": incl_esp,
+            "incluir_extraordinaria": incl_ext,
+            "usar_ultimo_dia_venc": usar_ultimo,
+            "dia_vencimento": dia_venc,
+            "juros_mensais_pct": juros_mes,
+            "multa_diaria_pct": multa_dia,
+            "multa_limite_pct": multa_lim,
+            "aplicar_honorarios": aplicar_honor,
+            "honorarios_pct": honor_pct,
+            "periodos_aliquota": periodos_cfg,
+        }
+
+        self.btn_pesp_calc.config(state="disabled")
+        self.lbl_pesp_status.config(text="Calculando...")
+        self._pesp_build_tree(eh_selic=(indice_key == "SELIC"))
+        limpar_cache_api()
+
+        def progress(msg):
+            self.after(0, lambda: self.lbl_pesp_status.config(text=msg))
+
+        def worker():
+            try:
+                res = calcular_patronais_esp_ext(config, competencias, progress_cb=progress)
+                self.after(0, lambda: self._render_pesp_results(res))
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: messagebox.showerror("Erro no cálculo", err))
+            finally:
+                self.after(0, lambda: self.btn_pesp_calc.config(state="normal"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_pesp_results(self, res):
+        self.pesp_resultado = res
+        eh_selic = res["config"]["indice_key"] == "SELIC"
+        for item in self.pesp_tree.get_children():
+            self.pesp_tree.delete(item)
+        for i, l in enumerate(res["linhas"]):
+            tag = "alt" if i % 2 == 1 else ""
+            if eh_selic:
+                values = (l["competencia"], l["descricao"][:18], fmt_brl(l["base"]),
+                    l["vencimento"].strftime("%d/%m/%y"), fmt_fator(l["fator"]),
+                    fmt_brl(l["valor_devido_seg"]), fmt_brl(l["valor_atual_seg"]),
+                    fmt_brl(l["juros_seg"]), fmt_brl(l["multa_seg"]), fmt_brl(l["total_seg"]),
+                    fmt_brl(l["valor_devido_pat"]), fmt_brl(l["valor_atual_pat"]),
+                    fmt_brl(l["juros_pat"]), fmt_brl(l["multa_pat"]), fmt_brl(l["total_pat"]),
+                    fmt_brl(l["total_geral"]), l["situacao"])
+            else:
+                values = (l["competencia"], l["descricao"][:18], fmt_brl(l["base"]),
+                    l["vencimento"].strftime("%d/%m/%y"), fmt_fator(l["fator"]),
+                    f"{float(l['meses_atraso']):.2f}".replace(".", ","),
+                    fmt_brl(l["valor_devido_seg"]), fmt_brl(l["valor_atual_seg"]),
+                    fmt_brl(l["juros_seg"]), fmt_brl(l["total_seg"]),
+                    fmt_brl(l["valor_devido_pat"]), fmt_brl(l["valor_atual_pat"]),
+                    fmt_brl(l["juros_pat"]), fmt_brl(l["total_pat"]),
+                    fmt_brl(l["total_geral"]), l["situacao"])
+            self.pesp_tree.insert("", "end", values=values, tags=(tag,))
+        t = res["totais"]
+        if eh_selic:
+            tot_values = ("TOTAIS", "", fmt_brl(t["base_total"]), "", "",
+                fmt_brl(t["valor_devido_seg"]), fmt_brl(t["valor_atual_seg"]),
+                fmt_brl(t["juros_seg"]), fmt_brl(t["multa_seg"]), fmt_brl(t["total_seg"]),
+                fmt_brl(t["valor_devido_pat"]), fmt_brl(t["valor_atual_pat"]),
+                fmt_brl(t["juros_pat"]), fmt_brl(t["multa_pat"]), fmt_brl(t["total_pat"]),
+                fmt_brl(t["total_geral"]), "")
+        else:
+            tot_values = ("TOTAIS", "", fmt_brl(t["base_total"]), "", "", "",
+                fmt_brl(t["valor_devido_seg"]), fmt_brl(t["valor_atual_seg"]),
+                fmt_brl(t["juros_seg"]), fmt_brl(t["total_seg"]),
+                fmt_brl(t["valor_devido_pat"]), fmt_brl(t["valor_atual_pat"]),
+                fmt_brl(t["juros_pat"]), fmt_brl(t["total_pat"]),
+                fmt_brl(t["total_geral"]), "")
+        self.pesp_tree.insert("", "end", values=tot_values, tags=("totais",))
+        if t.get("aplicar_honorarios") and t.get("honorarios", Decimal("0")) > 0:
+            n_cols = len(self.pesp_tree["columns"])
+            pct = float(t["honorarios_pct"]) * 100
+            vhon = [""] * n_cols
+            vhon[0] = f"HONORÁRIOS ({pct:.1f}% sobre o total)".replace(".", ",")
+            vhon[-2] = fmt_brl(t["honorarios"])
+            self.pesp_tree.insert("", "end", values=vhon, tags=("honor",))
+            vtot = [""] * n_cols
+            vtot[0] = "TOTAL + HONORÁRIOS"
+            vtot[-2] = fmt_brl(t["total_com_honorarios"])
+            self.pesp_tree.insert("", "end", values=vtot, tags=("totais",))
+        if t.get("aplicar_honorarios") and t.get("honorarios", Decimal("0")) > 0:
+            status_txt = (f"✓ Calculado ({t['qtd_competencias']} competências)  ·  "
+                         f"Total: R$ {fmt_brl(t['total_geral'])}  +  Honor.: "
+                         f"R$ {fmt_brl(t['honorarios'])}  =  R$ {fmt_brl(t['total_com_honorarios'])}")
+        else:
+            status_txt = (f"✓ Calculado ({t['qtd_competencias']} competências)  ·  "
+                         f"TOTAL GERAL: R$ {fmt_brl(t['total_geral'])}")
+        self.lbl_pesp_status.config(text=status_txt)
 
     # ================================================================
     # Tab: Cobrança Amigável
