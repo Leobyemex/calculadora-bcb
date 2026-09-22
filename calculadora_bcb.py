@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.36"
+APP_VERSION  = "2.9.37"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -9019,8 +9019,8 @@ class CalculadoraApp(tk.Tk):
         row("Valor atualizado:", fmt_brl(res["valor_atualizado"]))
         row(f"Multa ({float(res['multa_pct']*100):.0f}%):",
             fmt_brl(res["multa"]))
-        row(f"Juros ({fot(res['juros_mensais_pct']*100):.1f}% × "
-            f"{float(res['meses_atraso_juros']):.2f} meses):".replace(".", ","),
+        row(f"Juros ({float(res['juros_mensais_pct']*100):.1f}% × "
+            f"{float(res['meses_atraso']):.2f} meses):".replace(".", ","),
             fmt_brl(res["juros"]))
 
         tk.Frame(frame, bg="#cccccc", height=1).pack(fill="x", padx=12, pady=4)
