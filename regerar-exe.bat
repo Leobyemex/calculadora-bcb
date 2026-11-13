@@ -24,15 +24,22 @@ if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 if exist CalculadoraBCB.spec del CalculadoraBCB.spec
 
+echo --- Python usado no build ---
+REM Usa o Python 3.14 (mesmo das versoes anteriores) para manter a
+REM pasta _internal compativel com quem atualiza pela versao antiga.
+set "PY=python"
+py -3.14 --version >nul 2>&1 && set "PY=py -3.14"
+%PY% --version
+
 echo --- Dependencias ---
-python -m pip install --upgrade pip 2>nul
-python -m pip install pyinstaller openpyxl reportlab --upgrade
+%PY% -m pip install --upgrade pip 2>nul
+%PY% -m pip install pyinstaller openpyxl reportlab --upgrade
 echo.
 
 echo --- Compilando (formato pasta) - 3 a 5 min ---
 REM etiqueta de versao gravada na _internal (usada para concluir atualizacoes)
 (echo %VER%)> build_version.txt
-python -m PyInstaller --onedir --windowed --name CalculadoraBCB --noconfirm ^
+%PY% -m PyInstaller --onedir --windowed --name CalculadoraBCB --noconfirm ^
   --collect-all openpyxl --collect-all reportlab ^
   --add-data "build_version.txt;." ^
   calculadora_bcb.py
