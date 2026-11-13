@@ -82,7 +82,7 @@ except Exception:
 # ===================== Configurações ===================== #
 
 APP_TITLE = "Calculadora do Cidadão — Correção de Valores"
-APP_VERSION  = "2.9.38"
+APP_VERSION  = "2.9.39"
 GITHUB_REPO  = "Leobyemex/calculadora-bcb"
 
 INDICES = {
@@ -958,6 +958,20 @@ def calcular_patronais_esp_ext(config, competencias, progress_cb=None):
 # - Abatimento de parcelas pagas (com ou sem correção)
 # - Abatimento de 13º como crédito (corrigido pelo mesmo índice do débito)
 
+def _meses_completos(inicio, fim):
+    """Quantidade de MESES COMPLETOS entre `inicio` e `fim` (data a data).
+    Ex.: 13/11/2026 -> 12/12/2026 = 0 ; 13/12/2026 = 1 ; 13/01/2027 = 2.
+    Se o dia não existe no mês final (ex.: notificação em 31/01), o mês se
+    completa no último dia desse mês (28/02 ou 29/02)."""
+    if fim <= inicio:
+        return 0
+    meses = (fim.year - inicio.year) * 12 + (fim.month - inicio.month)
+    dia_aniv = min(inicio.day, monthrange(fim.year, fim.month)[1])
+    if fim.day < dia_aniv:
+        meses -= 1
+    return max(meses, 0)
+
+
 def calcular_cobranca_amigavel(config, progress_cb=None):
     """
     config:
@@ -1113,17 +1127,18 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
                 # A data de notificação não substitui a base — serve apenas
                 # para a correção pelo dia quando o dia de atualização ainda
                 # não atingiu o dia da notificação no mês corrente.
-                ref_month = det["data"].month
-                ref_year  = det["data"].year
-                meses_c   = (data_atual.year - ref_year) * 12 + \
-                            (data_atual.month - ref_month)
-                # Correção de dia: aplica SOMENTE no modo "notificacao".
-                # Ex.: notif 14/07, update 08/06 → day 8 < 14 → -1 mês.
-                if (juros_desde == "notificacao" and data_notif
-                        and data_atual.day < data_notif.day):
-                    meses_c -= 1
-                if meses_c < 0:
-                    meses_c = 0
+                if juros_desde == "notificacao":
+                    # v2.9.39: juros correm da NOTIFICAÇÃO, só por mês
+                    # COMPLETO (notif 13/11 -> 1% a partir de 13/12).
+                    meses_c = _meses_completos(data_notif, data_atual)
+                else:
+                    # "origem": mantém a regra anterior (mês da competência)
+                    ref_month = det["data"].month
+                    ref_year  = det["data"].year
+                    meses_c   = (data_atual.year - ref_year) * 12 + \
+                                (data_atual.month - ref_month)
+                    if meses_c < 0:
+                        meses_c = 0
                 meses_c_dec = Decimal(meses_c)
                 juros_c = (det["valor_corrigido"] * juros_mes *
                           meses_c_dec).quantize(Decimal("0.01"))
@@ -1136,7 +1151,11 @@ def calcular_cobranca_amigavel(config, progress_cb=None):
             )
         else:
             # Modo "débito único" (comportamento original, com dias/30)
-            if data_atual < data_inicio_juros:
+            if juros_desde == "notificacao":
+                # v2.9.39: só meses COMPLETOS desde a notificação
+                meses_atraso_juros = Decimal(
+                    _meses_completos(data_inicio_juros, data_atual))
+            elif data_atual < data_inicio_juros:
                 meses_atraso_juros = Decimal("0")
             else:
                 dias_atraso = (data_atual - data_inicio_juros).days
@@ -7769,9 +7788,10 @@ class CalculadoraApp(tk.Tk):
         # Aviso explicativo sobre quando usar os juros
         tk.Label(juros_inner,
                 text="ℹ Juros de mora habilitados por padrão. Correm a partir da "
-                "Data de Notificação (Portaria IPREM 51/2022, art. 28). Informe "
-                "a data ao lado. Se ainda não houve notificação formal, desmarque "
-                "ou selecione \"Data de origem do débito\".",
+                "Data de Notificação (Portaria IPREM 51/2022, art. 28), 1% a cada "
+                "mês COMPLETO (ex.: notificado em 13/11 → 1% a partir de 13/12). "
+                "Se ainda não houve notificação formal, desmarque ou selecione "
+                "\"Data de origem do débito\".",
                 bg=COLOR_PANEL, fg="#9C7700", font=("Verdana", 7),
                 wraplength=820, justify="left").grid(
             row=1, column=0, columnspan=6, sticky="w", padx=4, pady=(4, 0))
